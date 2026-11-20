@@ -21,14 +21,6 @@ button:disabled{opacity:.45;cursor:default}
 #status{min-height:2.5em;font-size:.9rem;color:#b7cadc;margin-top:14px}
 #help{font-size:.82rem;color:#91a9c2}
 #hud{position:fixed;z-index:1;top:14px;left:50%;transform:translateX(-50%);padding:8px 14px;border-radius:99px;background:#06101dcc;border:1px solid #39718d;color:#dff9ff;display:none;pointer-events:none}
-#vrSettings{display:none;position:fixed;z-index:20;left:50%;top:50%;transform:translate(-50%,-50%);width:min(86vw,420px);max-height:82vh;overflow:auto;padding:22px;border:1px solid #53e5ff;border-radius:20px;background:rgba(4,13,28,.96);color:#edf5ff;text-align:left;box-shadow:0 12px 50px #000b;pointer-events:auto}
-#vrSettings h2{margin:0 0 8px;color:#53e5ff}
-#vrSettings p{font-size:.9rem;color:#b9cde0;margin:8px 0 16px}
-#vrSettings label{display:block;margin:14px 0 6px;font-weight:700}
-#vrSettings input[type=range],#vrSettings select{width:100%;accent-color:#53e5ff}
-#vrSettings .setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
-#vrSettings button{margin-top:16px;background:#197caa}
-#vrSettings .hint{font-size:.78rem;color:#8faac2}
 </style>
 </head>
 <body>
@@ -39,26 +31,9 @@ button:disabled{opacity:.45;cursor:default}
   <button id="enter" disabled>CHECKING VR SUPPORT…</button>
   <button id="desktop">PLAY ON DESKTOP</button>
   <div id="status">Loading 3D engine…</div>
-  <p id="help">VR: gravity lowers you until your tracked hands physically contact the floor; hands cannot pass through it. Plant a hand and swing/push against the floor or platforms. Only moving arm strokes against the floor or platforms propel you; holding a hand still will not move you. Momentum slows when you stop swinging. Turn with the right thumbstick. Press Y on the left controller for settings. Desktop: WASD to move, Space to jump, mouse to look.</p>
+  <p id="help">VR: gravity lowers you until your tracked hands physically contact the floor; hands cannot pass through it. Plant a hand and swing/push against the floor or platforms. Only moving arm strokes against the floor or platforms propel you; holding a hand still will not move you. Momentum slows when you stop swinging. Turn with the right thumbstick. Press Y on the left controller to show its wrist-mounted settings menu. Desktop: WASD to move, Space to jump, mouse to look.</p>
 </main>
-<div id="hud">ROBO TAG · Swing your arms to move · Press Y on the left controller for settings</div>
-<div id="vrSettings">
- <h2>ROBO TAG SETTINGS</h2>
- <p>Movement and turning options</p>
- <div class="setting-row">
-  <label for="rotateEnabled">Rotate</label>
-  <input id="rotateEnabled" type="checkbox" checked>
- </div>
- <label for="rotateType">Rotate type</label>
- <select id="rotateType">
-  <option value="snap">Snap</option>
-  <option value="smooth">Smooth</option>
- </select>
- <label for="rotateSpeed">Rotate speed: <span id="rotateSpeedValue">120</span>°/sec</label>
- <input id="rotateSpeed" type="range" min="30" max="240" step="10" value="120">
- <p class="hint">Use the right thumbstick left or right to turn. Press Y on the left controller to open or close this panel. The Quest system Menu button itself is reserved by the headset.</p>
- <button id="closeSettings">CLOSE SETTINGS</button>
-</div>
+<div id="hud">ROBO TAG · Swing your arms to move · Press Y on the left controller for wrist settings</div>
 <div id="fatal" style="display:none;position:fixed;z-index:10;left:5%;right:5%;bottom:5%;padding:14px 18px;background:#310d16ee;border:1px solid #ff647c;border-radius:12px;color:white;font:14px system-ui;white-space:pre-wrap"></div>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
@@ -206,8 +181,17 @@ const controllers=[0,1].map(i=>{
  const c=renderer.xr.getController(i);
  const hand=new THREE.Mesh(handGeo,handMat.clone()); c.add(hand);
  c.userData.hand=hand; c.userData.prev=new THREE.Vector3();
- c.addEventListener('connected',()=>c.userData.connected=true);
- c.addEventListener('disconnected',()=>c.userData.connected=false);
+ c.addEventListener('connected',ev=>{
+  c.userData.connected=true;
+  c.userData.handedness=ev.data?.handedness||'';
+  if(c.userData.handedness==='left' && settingsMenu3D){
+   c.add(settingsMenu3D);
+   settingsMenu3D.position.set(0,.16,-.28);
+   settingsMenu3D.rotation.set(-.28,0,0);
+  }
+ });
+ c.addEventListener('disconnected',()=>{c.userData.connected=false;c.userData.handedness='';});
+ c.addEventListener('selectstart',()=>{if(c.userData.handedness==='left')activateSettingsMenu(c);});
  rig.add(c);
  return c;
 });
@@ -298,26 +282,79 @@ let activeSwingThisFrame=false;
 let rotateEnabled=true, rotateType='snap', rotateSpeed=120;
 let snapTurnReady=true, settingsVisible=false, leftYWasPressed=false;
 let snapTurnCooldown=0;
-const settingsPanel=$('vrSettings');
-const rotateEnabledInput=$('rotateEnabled');
-const rotateTypeInput=$('rotateType');
-const rotateSpeedInput=$('rotateSpeed');
-const rotateSpeedValue=$('rotateSpeedValue');
+
+// A small canvas-textured panel is parented to the left controller, so it
+// appears in the VR world beside the user's wrist rather than on the webpage.
+const settingsCanvas=document.createElement('canvas');
+settingsCanvas.width=512; settingsCanvas.height=512;
+const settingsCtx=settingsCanvas.getContext('2d');
+const settingsTexture=new THREE.CanvasTexture(settingsCanvas);
+settingsTexture.colorSpace=THREE.SRGBColorSpace;
+const settingsMenu3D=new THREE.Group();
+const settingsPanelMesh=new THREE.Mesh(
+ new THREE.PlaneGeometry(.44,.48),
+ new THREE.MeshBasicMaterial({map:settingsTexture,transparent:true,side:THREE.DoubleSide,depthTest:true})
+);
+settingsMenu3D.add(settingsPanelMesh);
+settingsMenu3D.visible=false;
+const settingsRaycaster=new THREE.Raycaster();
+const settingsRayOrigin=new THREE.Vector3();
+const settingsRayDirection=new THREE.Vector3(0,0,-1);
+function drawSettingsMenu(){
+ const ctx=settingsCtx;
+ ctx.clearRect(0,0,512,512);
+ ctx.fillStyle='rgba(4,13,28,.96)';
+ ctx.strokeStyle='#53e5ff'; ctx.lineWidth=6;
+ ctx.beginPath(); ctx.roundRect(8,8,496,496,28); ctx.fill(); ctx.stroke();
+ ctx.fillStyle='#53e5ff'; ctx.font='bold 34px system-ui'; ctx.textAlign='center';
+ ctx.fillText('ROBO TAG',256,58);
+ ctx.fillStyle='#d9eaf8'; ctx.font='22px system-ui';
+ ctx.fillText('LEFT-HAND SETTINGS',256,91);
+ const button=(y,label,value='')=>{
+  ctx.fillStyle='#142c43'; ctx.strokeStyle='#397f9e'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.roundRect(34,y,444,66,14); ctx.fill(); ctx.stroke();
+  ctx.textAlign='left'; ctx.fillStyle='#dff7ff'; ctx.font='bold 23px system-ui';
+  ctx.fillText(label,54,y+41);
+  ctx.textAlign='right'; ctx.fillStyle='#53e5ff'; ctx.fillText(value,456,y+41);
+ };
+ button(116,'Rotation',rotateEnabled?'ON':'OFF');
+ button(202,'Turn style',rotateType==='snap'?'SNAP':'SMOOTH');
+ button(288,'Turn speed',`${rotateSpeed}°/s`);
+ ctx.textAlign='center'; ctx.fillStyle='#9db8cc'; ctx.font='18px system-ui';
+ ctx.fillText('Tap speed row: left = slower, right = faster',256,383);
+ ctx.fillStyle='#7b2c3a'; ctx.strokeStyle='#ff7187';
+ ctx.beginPath(); ctx.roundRect(34,418,444,60,14); ctx.fill(); ctx.stroke();
+ ctx.fillStyle='#fff'; ctx.font='bold 24px system-ui'; ctx.fillText('CLOSE',256,457);
+ settingsTexture.needsUpdate=true;
+}
 function setSettingsVisible(show){
  settingsVisible=!!show;
- settingsPanel.style.display=settingsVisible?'block':'none';
+ settingsMenu3D.visible=settingsVisible;
+ if(settingsVisible)drawSettingsMenu();
 }
-rotateEnabledInput.addEventListener('change',()=>rotateEnabled=rotateEnabledInput.checked);
-rotateTypeInput.addEventListener('change',()=>rotateType=rotateTypeInput.value);
-rotateSpeedInput.addEventListener('input',()=>{
- rotateSpeed=Number(rotateSpeedInput.value);
- rotateSpeedValue.textContent=String(rotateSpeed);
-});
-$('closeSettings').addEventListener('click',()=>setSettingsVisible(false));
+function activateSettingsMenu(controller){
+ if(!settingsVisible)return;
+ controller.updateMatrixWorld(true);
+ settingsMenu3D.updateMatrixWorld(true);
+ settingsRayOrigin.setFromMatrixPosition(controller.matrixWorld);
+ settingsRayDirection.set(0,0,-1).applyQuaternion(controller.getWorldQuaternion(new THREE.Quaternion())).normalize();
+ settingsRaycaster.set(settingsRayOrigin,settingsRayDirection);
+ const hits=settingsRaycaster.intersectObject(settingsPanelMesh,false);
+ if(!hits.length)return;
+ const uv=hits[0].uv;
+ const px=uv.x*512, py=(1-uv.y)*512;
+ if(py>=116&&py<=182) rotateEnabled=!rotateEnabled;
+ else if(py>=202&&py<=268) rotateType=rotateType==='snap'?'smooth':'snap';
+ else if(py>=288&&py<=354) rotateSpeed=THREE.MathUtils.clamp(rotateSpeed+(px<256?-10:10),30,240);
+ else if(py>=418&&py<=478){setSettingsVisible(false);return;}
+ drawSettingsMenu();
+}
+drawSettingsMenu();
 addEventListener('keydown',e=>{
  if(e.code==='Escape' && session){setSettingsVisible(!settingsVisible);e.preventDefault();}
 });
 const playerVelocity = new THREE.Vector3();
+const handLocomotion = new THREE.Vector3();
 const PLAYER_RADIUS = .34;
 const PLAYER_HEIGHT = 1.7;
 const FLOOR_Y = 0;
@@ -325,47 +362,97 @@ const HAND_FLOOR_RADIUS = 0.16;
 const _pushOut = new THREE.Vector3();
 
 function resolvePlayerCollisions(previousFeetY){
- // Keep the player's feet on the floor baseline, while allowing the tracked
- // headset to remain at natural standing height above it.
  let landed=false;
 
- // Resolve solid world objects as a standing capsule approximated by a
- // vertical cylinder. This covers platform sides, trees, foliage and hills.
+ // First resolve descending contact against the highest surface crossed this
+ // frame. Grass caps have their own collider, so their actual top is walkable.
+ let supportTop=-Infinity;
+ for(const b of solidColliders){
+  const overlapsX=rig.position.x+PLAYER_RADIUS>b.min.x && rig.position.x-PLAYER_RADIUS<b.max.x;
+  const overlapsZ=rig.position.z+PLAYER_RADIUS>b.min.z && rig.position.z-PLAYER_RADIUS<b.max.z;
+  if(overlapsX&&overlapsZ&&playerVelocity.y<=0&&previousFeetY>=b.max.y-(Math.abs(playerVelocity.y)*.05+.08)&&rig.position.y<=b.max.y){
+   supportTop=Math.max(supportTop,b.max.y);
+  }
+ }
+ if(supportTop>-Infinity){
+  rig.position.y=supportTop;
+  if(playerVelocity.y<0)playerVelocity.y=0;
+  landed=true;
+ }
+
+ // The standing capsule blocks the player's full body against solid objects.
  for(const b of solidColliders){
   const feet=rig.position.y, head=feet+PLAYER_HEIGHT;
-  if(head <= b.min.y || feet >= b.max.y) continue;
-
+  if(head<=b.min.y || feet>=b.max.y) continue;
   const cx=THREE.MathUtils.clamp(rig.position.x,b.min.x,b.max.x);
   const cz=THREE.MathUtils.clamp(rig.position.z,b.min.z,b.max.z);
   let dx=rig.position.x-cx, dz=rig.position.z-cz;
   let distSq=dx*dx+dz*dz;
-  if(distSq < PLAYER_RADIUS*PLAYER_RADIUS){
-   if(distSq < 1e-8){
+  if(distSq<PLAYER_RADIUS*PLAYER_RADIUS){
+   if(distSq<1e-8){
     const options=[
      {d:Math.abs(rig.position.x-b.min.x),x:-1,z:0},
      {d:Math.abs(b.max.x-rig.position.x),x:1,z:0},
      {d:Math.abs(rig.position.z-b.min.z),x:0,z:-1},
      {d:Math.abs(b.max.z-rig.position.z),x:0,z:1}
     ].sort((a,b)=>a.d-b.d);
-    dx=options[0].x;dz=options[0].z;distSq=1;
+    dx=options[0].x; dz=options[0].z; distSq=1;
    }
-   const dist=Math.sqrt(distSq);
-   const nx=dx/dist,nz=dz/dist;
+   const dist=Math.sqrt(distSq), nx=dx/dist, nz=dz/dist;
    const overlap=PLAYER_RADIUS-dist;
-   rig.position.x+=nx*overlap;
-   rig.position.z+=nz*overlap;
+   rig.position.x+=nx*overlap; rig.position.z+=nz*overlap;
    const into=playerVelocity.x*nx+playerVelocity.z*nz;
    if(into<0){playerVelocity.x-=into*nx;playerVelocity.z-=into*nz;}
   }
+ }
 
-  // A box top is a walkable landing surface when descending onto it.
-  const overlapsX=rig.position.x+PLAYER_RADIUS>b.min.x && rig.position.x-PLAYER_RADIUS<b.max.x;
-  const overlapsZ=rig.position.z+PLAYER_RADIUS>b.min.z && rig.position.z-PLAYER_RADIUS<b.max.z;
-  if(overlapsX&&overlapsZ&&playerVelocity.y<=0&&previousFeetY>=b.max.y-.12&&rig.position.y<=b.max.y){
-   rig.position.y=b.max.y;
-   playerVelocity.y=0;
-   landed=true;
+ // Explicit torso sphere collision follows the tracked headset. This lets the
+ // robot sit/rest against the floor or elevated platforms even when its hands
+ // are not planted.
+ const headWorld=new THREE.Vector3();
+ camera.getWorldPosition(headWorld);
+ const torsoCenter=headWorld.clone(); torsoCenter.y-=.36;
+ const torsoRadius=.19;
+ if(torsoCenter.y-torsoRadius<GROUND_TOP){
+  const lift=GROUND_TOP-(torsoCenter.y-torsoRadius);
+  rig.position.y+=lift;
+  if(playerVelocity.y<0)playerVelocity.y=0;
+  landed=true;
+ }
+ rig.updateMatrixWorld(true);
+ camera.getWorldPosition(headWorld);
+ torsoCenter.copy(headWorld); torsoCenter.y-=.36;
+ for(const b of solidColliders){
+  _closest.set(
+   THREE.MathUtils.clamp(torsoCenter.x,b.min.x,b.max.x),
+   THREE.MathUtils.clamp(torsoCenter.y,b.min.y,b.max.y),
+   THREE.MathUtils.clamp(torsoCenter.z,b.min.z,b.max.z)
+  );
+  const delta=torsoCenter.clone().sub(_closest);
+  const distSq=delta.lengthSq();
+  if(distSq>=torsoRadius*torsoRadius)continue;
+  let normal,penetration;
+  if(distSq>1e-8){
+   const dist=Math.sqrt(distSq);
+   normal=delta.multiplyScalar(1/dist);
+   penetration=torsoRadius-dist;
+  }else{
+   // If the torso center is inside a collider, eject it through the nearest face.
+   const faces=[
+    {d:torsoCenter.x-b.min.x,n:new THREE.Vector3(-1,0,0)},
+    {d:b.max.x-torsoCenter.x,n:new THREE.Vector3(1,0,0)},
+    {d:torsoCenter.y-b.min.y,n:new THREE.Vector3(0,-1,0)},
+    {d:b.max.y-torsoCenter.y,n:new THREE.Vector3(0,1,0)},
+    {d:torsoCenter.z-b.min.z,n:new THREE.Vector3(0,0,-1)},
+    {d:b.max.z-torsoCenter.z,n:new THREE.Vector3(0,0,1)}
+   ].sort((a,b)=>a.d-b.d);
+   normal=faces[0].n;
+   penetration=faces[0].d+torsoRadius;
   }
+  rig.position.addScaledVector(normal,penetration);
+  const into=playerVelocity.dot(normal);
+  if(into<0)playerVelocity.addScaledVector(normal,-into);
+  if(normal.y>0.5)landed=true;
  }
  return landed;
 }
@@ -460,6 +547,7 @@ function catchPlayerWithHands(){
 function movePlayer(dt){
   const previousFeetY = rig.position.y;
   let pushed=false;
+  handLocomotion.set(0,0,0);
   activeSwingThisFrame=false;
 
   if(desktop){
@@ -512,15 +600,13 @@ function movePlayer(dt){
     // into world space before calculating the reaction on the player.
     _delta.copy(c.position).sub(previousHands[i]).applyQuaternion(rig.quaternion);
     const handSpeed = _delta.length() / Math.max(dt,0.001);
-    // A hand must actually sweep through space while contacting a surface.
-    // Holding one hand still cannot generate propulsion.
-    if(handSpeed > 0.45){
+    // Small, deliberate hand strokes count too; only tracking jitter is ignored.
+    if(handSpeed > 0.10){
      const push=handSurfacePush(_hand,_delta);
-     if(push.lengthSq()>0){
-      // Apply a displacement-based impulse once per moving contact sample.
-      // This avoids the old runaway acceleration from repeatedly adding
-      // hand velocity every rendered frame.
-      playerVelocity.addScaledVector(push,12.0);
+     if(push.lengthSq()>0.000004){
+      // Gorilla-style movement: when a planted hand moves against a surface,
+      // move the body in the opposite direction almost one-for-one.
+      handLocomotion.addScaledVector(push,0.96);
       activeSwingThisFrame=true;
       pushed=true;
      }
@@ -539,6 +625,17 @@ function movePlayer(dt){
   // Gravity applies in both desktop and VR modes.
   playerVelocity.y -= 9.8*dt;
   rig.position.addScaledVector(playerVelocity,dt);
+  if(handLocomotion.lengthSq()>0){
+   // Limit only extreme single-frame tracking spikes; normal strokes remain 1:1.
+   const strokeLength=handLocomotion.length();
+   if(strokeLength>0.28)handLocomotion.multiplyScalar(0.28/strokeLength);
+   rig.position.add(handLocomotion);
+   // Convert the hand stroke into momentum as well as immediate displacement.
+   const momentumGain=0.32/Math.max(dt,0.012);
+   playerVelocity.x += handLocomotion.x*momentumGain;
+   playerVelocity.z += handLocomotion.z*momentumGain;
+   playerVelocity.y += handLocomotion.y*momentumGain;
+  }
 
   // Gorilla Tag-style support: there is no automatic feet-floor landing.
   // Gravity continues until one or both tracked hands touch the virtual floor.
@@ -560,7 +657,7 @@ function movePlayer(dt){
   // Momentum fades when the player stops actively swinging. While a hand
   // is making a real push stroke, preserve more speed; otherwise apply
   // substantial damping so the player cannot coast/glide across the arena.
-  const dragRate = activeSwingThisFrame ? 0.9 : (grounded ? 5.5 : 2.8);
+  const dragRate = activeSwingThisFrame ? 0.12 : (grounded ? 1.65 : 0.62);
   const horizontalDrag = Math.exp(-dragRate*dt);
   playerVelocity.x *= horizontalDrag;
   playerVelocity.z *= horizontalDrag;
@@ -573,7 +670,7 @@ function movePlayer(dt){
    playerVelocity.x *= scale;
    playerVelocity.z *= scale;
   }
-  playerVelocity.y = THREE.MathUtils.clamp(playerVelocity.y,-18,12);
+  playerVelocity.y = THREE.MathUtils.clamp(playerVelocity.y,-16,11);
 
   // If tracking is lost and the player falls out of the world, safely respawn.
   if(rig.position.y < -14){
@@ -639,8 +736,7 @@ async function enterVR(){
   statusEl.textContent='Starting virtual reality…';
   const s=await navigator.xr.requestSession('immersive-vr',{
    requiredFeatures:['local-floor'],
-   optionalFeatures:['hand-tracking','dom-overlay'],
-   domOverlay:{root:settingsPanel}
+   optionalFeatures:['hand-tracking']
   });
   session=s;desktop=false;playerVelocity.set(0,0,0);handWasTracked.fill(false);leftYWasPressed=false;snapTurnCooldown=0;yaw=0;camera.position.set(0,0,0);
   s.addEventListener('end',()=>{session=null;setSettingsVisible(false);ws?.close();ws=null;menu.style.display='block';$('hud').style.display='none';statusEl.textContent='VR session ended.';});
