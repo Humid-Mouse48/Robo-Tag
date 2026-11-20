@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Robo Tag</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;display:grid;place-items:center;min-height:100vh;text-align:center}
+  main{padding:1.25rem;width:min(24rem,100%)}
+  h1{margin:0 0 .5rem;font-size:2.8rem;letter-spacing:.08em;color:#38e1ff}
+  p{opacity:.75}
+  #enter{margin-top:.5rem;width:100%;font-size:1.4rem;padding:1.1rem;border:0;border-radius:.6rem;background:#ff5a36;color:#fff;cursor:pointer}
+  #enter:disabled{background:#444;color:#999;cursor:default}
+  #status{margin-top:.9rem;min-height:1.4rem;opacity:.8;font-size:.95rem}
+  canvas{position:fixed;inset:0;z-index:-1;pointer-events:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>ROBO TAG</h1>
+  <p>Tap to enter AR. The room code board is waiting for you inside.</p>
+  <button id="enter" disabled>ENTER AR</button>
+  <div id="status">Checking WebXR support…</div>
+</main>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const enterBtn = document.getElementById('enter'), statusEl = document.getElementById('status');
+const MIN_LEN = 4, MAX_LEN = 6;
+let code = (new URLSearchParams(location.search).get('room') || '').replace(/\D/g, '').slice(0, MAX_LEN);
+let mode = 'idle';      // idle -> lobby -> align -> game
+let calib = null, alignN = 5, hover = null, countdown = null;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 50);
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 2));
+
+const COL = { it: 0xff2a2a, ok: 0x38a0ff, none: 0xffffff, immune: 0xffe14a };
+const color = (m, it, imm) => m.color.setHex(it ? COL.it : imm ? COL.immune : calib ? COL.ok : COL.none);
+const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+const mat = () => new THREE.MeshStandardMaterial({ color: COL.none, roughness: 0.35, metalness: 0.4 });
+
+// ---------- In-AR lobby board ----------
+const CW = 512, CH = 720, PW = 0.5, PH = PW * CH / CW;
+const cv = document.createElement('canvas'); cv.width = CW; cv.height = CH;
+const g = cv.getContext('2d');
+const tex = new THREE.CanvasTexture(cv);
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(PW, PH), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+panel.visible = false; scene.add(panel);
+
+const btns = ['1','2','3','4','5','6','7','8','9','C','0','⌫'].map((k, i) =>
+  ({ k, x: 30 + (i % 3) * 156, y: 190 + Math.floor(i / 3) * 102, w: 140, h: 90 }));
+btns.push({ k: 'JOIN', x: 30, y: 598, w: 452, h: 90 });
+
+function draw() {
+  g.clearRect(0, 0, CW, CH);
+  g.fillStyle = '#0d1117'; g.fillRect(0, 0, CW, CH);
+  g.strokeStyle = '#38e1ff'; g.lineWidth = 6; g.strokeRect(3, 3, CW - 6, CH - 6);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = '#38e1ff'; g.font = 'bold 56px system-ui'; g.fillText('ROBO TAG', CW / 2, 50);
+  if (mode === 'align') {
+    g.fillStyle = '#e6edf3'; g.font = '34px system-ui';
+    ['Room ' + code, '', 'Stand on the start spot', 'facing the same way', '', 'Aligning in ' + alignN + '…']
+      .forEach((t, i) => g.fillText(t, CW / 2, 220 + i * 55));
+  } else {
+    g.fillStyle = '#161b22'; g.fillRect(30, 100, 452, 70);
+    g.fillStyle = '#fff'; g.font = 'bold 54px monospace';
+    g.fillText(code ? code.split('').join(' ') : '– – – –', CW / 2, 136);
+    for (const b of btns) {
+      g.fillStyle = b.k === 'JOIN' ? (code.length >= MIN_LEN ? '#ff5a36' : '#444') : b === hover ? '#38e1ff' : '#21262d';
+      g.fillRect(b.x, b.y, b.w, b.h);
+      g.fillStyle = b === hover && b.k !== 'JOIN' ? '#0d1117' : '#fff';
+      g.font = 'bold 44px system-ui'; g.fillText(b.k === 'JOIN' ? 'JOIN' : b.k, b.x + b.w / 2, b.y + b.h / 2);
+    }
+  }
+  tex.needsUpdate = true;
+}
+const btnAt = (u, v) => { const x = u * CW, y = (1 - v) * CH; return btns.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h); };
+
+function placePanel() {
+  const p = new THREE.Vector3(), d = new THREE.Vector3();
+  camera.getWorldPosition(p); camera.getWorldDirection(d);
+  d.y = 0; d.normalize();
+  panel.position.set(p.x + d.x * 0.8, p.y - 0.1, p.z + d.z * 0.8);
+  panel.lookAt(p.x, panel.position.y, p.z);
+  panel.updateMatrixWorld(true);
+  panel.visible = true; draw();
+}
+
+function buzz(c, ms = 60) {
+  const src = session?.inputSources.find(s => s.targetRaySpace === c.userData.space);
+  (src || {}).gamepad?.hapticActuators?.[0]?.pulse?.(0.6, ms);
+}
+
+function press(b, c) {
+  if (!b || mode !== 'lobby') return;
+  if (b.k === 'JOIN') { if (code.length >= MIN_LEN) startJoin(); return; }
+  if (b.k === 'C') code = '';
+  else if (b.k === '⌫') code = code.slice(0, -1);
+  else if (code.length < MAX_LEN) code += b.k;
+  if (c) buzz(c);
+  draw();
+}
+
+function startJoin() {
+  mode = 'align'; alignN = 5; draw(); connect();
+  countdown = setInterval(() => {
+    alignN--;
+    if (alignN > 0) return draw();
+    clearInterval(countdown); calibrate();
+    mode = 'game'; panel.visible = false; rays.forEach(r => (r.visible = false));
+  }, 1000);
+}
+
+// ---------- Controllers ----------
+const raycaster = new THREE.Raycaster();
+const handMat = mat();
+const rays = [];
+const ctrls = [0, 1].map(i => {
+  const c = renderer.xr.getController(i);
+  c.userData.connected = false;
+  c.add(box(0.1, 0.1, 0.1, handMat));
+  const ray = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -2)]),
+    new THREE.LineBasicMaterial({ color: 0x38e1ff }));
+  c.add(ray); rays.push(ray);
+  c.addEventListener('connected', e => { c.userData.connected = true; c.userData.space = e.data?.targetRaySpace; });
+  c.addEventListener('disconnected', () => (c.userData.connected = false));
+  c.addEventListener('selectstart', () => {
+    if (mode === 'game') return calibrate();      // trigger/tap re-aligns during play
+    if (mode !== 'lobby') return;
+    raycaster.setFromXRController(c);
+    const hit = raycaster.intersectObject(panel)[0];
+    if (hit) press(btnAt(hit.uv.x, hit.uv.y), c);
+  });
+  scene.add(c);
+  return c;
+});
+
+function lobbyFrame() {
+  if (mode !== 'lobby' || !panel.visible) return;
+  let h = null;
+  const w = new THREE.Vector3();
+  for (const c of ctrls) {
+    if (!c.userData.connected) continue;
+    raycaster.setFromXRController(c);
+    const hit = raycaster.intersectObject(panel)[0];
+    if (hit) h = btnAt(hit.uv.x, hit.uv.y) || h;
+    // poke: touch the board with a hand
+    const l = panel.worldToLocal(c.getWorldPosition(w));
+    const inside = Math.abs(l.x) < PW / 2 && Math.abs(l.y) < PH / 2;
+    if (inside && Math.abs(l.z) < 0.03 && !c.userData.poked) {
+      c.userData.poked = true; press(btnAt(l.x / PW + 0.5, l.y / PH + 0.5), c);
+    } else if (Math.abs(l.z) > 0.07 || !inside) c.userData.poked = false;
+  }
+  if (h !== hover) { hover = h; draw(); }
+}
+
+// ---------- Shared-room coordinates ----------
+function calibrate() {
+  const p = new THREE.Vector3(), d = new THREE.Vector3();
+  camera.getWorldPosition(p); camera.getWorldDirection(d);
+  calib = { ox: p.x, oz: p.z, yaw: Math.atan2(d.x, d.z) };
+  color(handMat, myIt, myImm);
+}
+function toShared([x, y, z]) {
+  const c = Math.cos(calib.yaw), s = Math.sin(calib.yaw), dx = x - calib.ox, dz = z - calib.oz;
+  return [dx * c - dz * s, y, dx * s + dz * c];
+}
+function fromShared([sx, y, sz]) {
+  const c = Math.cos(calib.yaw), s = Math.sin(calib.yaw);
+  return [sx * c + sz * s + calib.ox, y, -sx * s + sz * c + calib.oz];
+}
+
+// ---------- Robot avatars ----------
+const avatars = new Map();
+function makeAvatar() {
+  const grp = new THREE.Group(), m = mat(), gray = new THREE.MeshStandardMaterial({ color: 0x888888 });
+  grp.mat = m;
+  grp.head = box(0.24, 0.24, 0.24, m);
+  const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.12), gray); ant.position.y = 0.18;
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.03), new THREE.MeshBasicMaterial({ color: 0x38e1ff })); tip.position.y = 0.25;
+  grp.head.add(ant, tip);
+  grp.l = box(0.1, 0.1, 0.1, m); grp.r = box(0.1, 0.1, 0.1, m);
+  grp.add(grp.head, grp.l, grp.r); scene.add(grp);
+  return grp;
+}
+
+// ---------- Networking ----------
+let ws, myId = null, myIt = false, myImm = false, session = null, lastSend = 0;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/?room=${encodeURIComponent(code)}`);
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'hi') myId = m.id;
+    else if (m.t === 'tagged') session?.inputSources.forEach(s => s.gamepad?.hapticActuators?.[0]?.pulse?.(1, 400));
+    else if (m.t === 's') applyState(m.p);
+  };
+}
+
+function applyState(players) {
+  const seen = new Set();
+  for (const p of players) {
+    if (p.id === myId) { myIt = p.it; myImm = p.imm; color(handMat, myIt, myImm); continue; }
+    seen.add(p.id);
+    let a = avatars.get(p.id);
+    if (!a) avatars.set(p.id, (a = makeAvatar()));
+    a.visible = !!calib && p.c;
+    if (!calib) continue;
+    a.head.position.set(...fromShared(p.h));
+    a.l.position.set(...fromShared(p.l));
+    a.r.position.set(...fromShared(p.r));
+    color(a.mat, p.it, p.imm);
+  }
+  for (const [id, a] of avatars) if (!seen.has(id)) { scene.remove(a); avatars.delete(id); }
+}
+
+renderer.setAnimationLoop(() => {
+  lobbyFrame();
+  const now = performance.now();
+  if (ws?.readyState === 1 && now - lastSend > 50) {
+    lastSend = now;
+    const h = new THREE.Vector3(), l = new THREE.Vector3(), r = new THREE.Vector3();
+    camera.getWorldPosition(h);
+    (ctrls[0].userData.connected ? ctrls[0] : camera).getWorldPosition(l);
+    (ctrls[1].userData.connected ? ctrls[1] : camera).getWorldPosition(r);
+    const conv = v => (calib ? toShared(v.toArray()) : v.toArray());
+    ws.send(JSON.stringify({ t: 'p', h: conv(h), l: conv(l), r: conv(r), c: !!calib }));
+  }
+  renderer.render(scene, camera);
+});
+
+// ---------- Start ----------
+enterBtn.onclick = async () => {
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: ['hand-tracking']
+    });
+    calib = null; myIt = false; myImm = false; hover = null; color(handMat, false, false);
+    rays.forEach(r => (r.visible = true));
+    session.addEventListener('end', () => {
+      clearInterval(countdown); ws?.close(); ws = null; session = null; calib = null; mode = 'idle';
+      panel.visible = false;
+      avatars.forEach(a => scene.remove(a)); avatars.clear();
+      statusEl.textContent = 'Left the game. Tap Enter AR to go back to the board.';
+    });
+    await renderer.xr.setSession(session);
+    setTimeout(() => { if (session) { mode = 'lobby'; placePanel(); } }, 800);
+  } catch (err) {
+    statusEl.textContent = 'Could not start AR: ' + err.message;
+  }
+};
+
+(async () => {
+  if (!navigator.xr) { statusEl.textContent = 'WebXR not available. Use Quest Browser or Chrome on Android.'; return; }
+  const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  statusEl.textContent = ok ? 'Ready.' : 'This device/browser does not support immersive AR.';
+  enterBtn.disabled = !ok;
+})();
+</script>
+</body>
+</html>
