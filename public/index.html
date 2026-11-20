@@ -31,7 +31,7 @@ button:disabled{opacity:.45;cursor:default}
   <button id="enter" disabled>CHECKING VR SUPPORT…</button>
   <button id="desktop">PLAY ON DESKTOP</button>
   <div id="status">Loading 3D engine…</div>
-  <p id="help">VR: stand normally; your feet start at the virtual floor. Push your controller-hands against the floor and platforms to move and jump. Desktop: WASD to move, Space to jump, mouse to look.</p>
+  <p id="help">VR: gravity lowers you until your tracked hands physically contact the floor; hands cannot pass through it. Plant a hand, then swing/push it down and backward against the floor or platforms to launch and move. Strong ground grip reduces unwanted sliding. Desktop: WASD to move, Space to jump, mouse to look.</p>
 </main>
 <div id="hud">ROBO TAG · Push off surfaces with your hands to move and jump</div>
 <div id="fatal" style="display:none;position:fixed;z-index:10;left:5%;right:5%;bottom:5%;padding:14px 18px;background:#310d16ee;border:1px solid #ff647c;border-radius:12px;color:white;font:14px system-ui;white-space:pre-wrap"></div>
@@ -89,12 +89,12 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(150, 32, 20), new THREE.Mesh
 scene.add(sky);
 const groundMat = new THREE.MeshStandardMaterial({color:0x4e9b55, roughness:1});
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(240,240), groundMat);
-ground.rotation.x = -Math.PI/2; ground.position.y = -0.06; scene.add(ground);
+ground.rotation.x = -Math.PI/2; ground.position.y = GROUND_TOP; scene.add(ground);
 
 // Arena floor with readable grid and boundary
 const arena = new THREE.Mesh(new THREE.CircleGeometry(34,64), new THREE.MeshStandardMaterial({color:0x5fae62, roughness:0.95}));
-arena.rotation.x=-Math.PI/2; arena.position.y=-0.035; scene.add(arena);
-const grid = new THREE.GridHelper(68,68,0x9bd28a,0x79b77b); grid.position.y=-0.02; scene.add(grid);
+arena.rotation.x=-Math.PI/2; arena.position.y=GROUND_TOP+0.005; scene.add(arena);
+const grid = new THREE.GridHelper(68,68,0x9bd28a,0x79b77b); grid.position.y=GROUND_TOP+0.01; scene.add(grid);
 const ring = new THREE.Mesh(new THREE.TorusGeometry(34,0.18,8,128), new THREE.MeshStandardMaterial({color:0x35d7ee, emissive:0x087b91}));
 ring.rotation.x=Math.PI/2; ring.position.y=0.02; scene.add(ring);
 
@@ -268,17 +268,14 @@ const playerVelocity = new THREE.Vector3();
 const PLAYER_RADIUS = .34;
 const PLAYER_HEIGHT = 1.7;
 const FLOOR_Y = 0;
+const GROUND_TOP = 0;
+const HAND_FLOOR_RADIUS = 0.16;
 const _pushOut = new THREE.Vector3();
 
 function resolvePlayerCollisions(previousFeetY){
  // Keep the player's feet on the floor baseline, while allowing the tracked
  // headset to remain at natural standing height above it.
  let landed=false;
- if(rig.position.y < FLOOR_Y){
-  rig.position.y=FLOOR_Y;
-  if(playerVelocity.y<0)playerVelocity.y=0;
-  landed=true;
- }
 
  // Resolve solid world objects as a standing capsule approximated by a
  // vertical cylinder. This covers platform sides, trees, foliage and hills.
@@ -332,7 +329,7 @@ const _closest = new THREE.Vector3();
 function handSurfacePush(handPos, handDelta){
  let bestPush = new THREE.Vector3();
  // The entire virtual floor is a pushable surface.
- if(handPos.y < handRadius + .025){
+ if(handPos.y < GROUND_TOP + HAND_FLOOR_RADIUS + .025){
   // A planted hand resists sideways motion too; lifting away does not pull.
   bestPush.x = -handDelta.x;
   bestPush.z = -handDelta.z;
@@ -376,6 +373,38 @@ function handSurfacePush(handPos, handDelta){
  return bestPush;
 }
 
+function catchPlayerWithHands(){
+ let touching=false;
+ let trackedHands=0;
+
+ // The floor is a real collision surface for each tracked controller.
+ // Lift the rig by the exact penetration amount so the hand sphere rests
+ // on the floor instead of passing through it.
+ for(const c of controllers){
+  if(!c.userData.connected) continue;
+  trackedHands++;
+  rig.updateMatrixWorld(true);
+  c.getWorldPosition(_hand);
+  const floorContactY = GROUND_TOP + HAND_FLOOR_RADIUS;
+  if(_hand.y < floorContactY){
+   const correction = floorContactY - _hand.y;
+   rig.position.y += correction;
+   rig.updateMatrixWorld(true);
+   if(playerVelocity.y < 0) playerVelocity.y = 0;
+   touching=true;
+  }
+ }
+
+ // Tracking-loss safety: keep the player from dropping through the world
+ // if the headset temporarily stops reporting either controller.
+ if(trackedHands===0 && rig.position.y < -1.15){
+  rig.position.y = -1.15;
+  if(playerVelocity.y < 0) playerVelocity.y = 0;
+  touching=true;
+ }
+ return touching;
+}
+
 function movePlayer(dt){
   const previousFeetY = rig.position.y;
   let pushed=false;
@@ -403,7 +432,7 @@ function movePlayer(dt){
      playerVelocity.addScaledVector(push,Math.min(1/dt,30)*.32);
      // A downward hand push against a surface launches the player upward.
      if(push.y > .008){
-      playerVelocity.y=Math.max(playerVelocity.y,Math.min(7.5,2.2+push.y/Math.max(dt,.008)*.38));
+      playerVelocity.y=Math.max(playerVelocity.y,Math.min(9.5,3.0+push.y/Math.max(dt,.008)*.55));
      }
      pushed=true;
     }
@@ -420,12 +449,38 @@ function movePlayer(dt){
 
   // Gravity applies in both desktop and VR modes.
   playerVelocity.y -= 9.8*dt;
-  playerVelocity.multiplyScalar(Math.pow(pushed ? .988 : .997,dt*60));
   rig.position.addScaledVector(playerVelocity,dt);
 
-  // Resolve floor and every registered solid. The rig origin is the player's
-  // feet, so local-floor VR keeps the headset at normal standing height.
-  grounded=resolvePlayerCollisions(previousFeetY);
+  // Gorilla Tag-style support: there is no automatic feet-floor landing.
+  // Gravity continues until one or both tracked hands touch the virtual floor.
+  const handGrounded = !desktop && session ? catchPlayerWithHands() : false;
+
+  // Desktop uses a conventional feet-on-floor collision. In VR, the hands
+  // are the primary ground contact, with a tracking-loss safety catch above.
+  let desktopGrounded = false;
+  if(desktop && rig.position.y < FLOOR_Y){
+   rig.position.y = FLOOR_Y;
+   if(playerVelocity.y < 0) playerVelocity.y = 0;
+   desktopGrounded = true;
+  }
+
+  // Platforms and solid obstacles still collide with the player's body.
+  const bodyGrounded = resolvePlayerCollisions(previousFeetY);
+  grounded = handGrounded || desktopGrounded || bodyGrounded;
+
+  // High-grip control: strongly brake horizontal drift while supported, with
+  // gentle air drag so momentum remains controllable without feeling icy.
+  const horizontalDrag = grounded ? Math.exp(-7.5*dt) : Math.exp(-1.35*dt);
+  playerVelocity.x *= horizontalDrag;
+  playerVelocity.z *= horizontalDrag;
+
+  // If tracking is lost and the player falls out of the world, safely respawn.
+  if(rig.position.y < -14){
+   rig.position.set(0,0,8);
+   playerVelocity.set(0,0,0);
+   handWasTracked.fill(false);
+   grounded=false;
+  }
 
   const radius=Math.hypot(rig.position.x,rig.position.z);
   if(radius>32){rig.position.x*=32/radius;rig.position.z*=32/radius;
