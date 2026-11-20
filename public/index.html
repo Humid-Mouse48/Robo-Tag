@@ -354,7 +354,6 @@ addEventListener('keydown',e=>{
  if(e.code==='Escape' && session){setSettingsVisible(!settingsVisible);e.preventDefault();}
 });
 const playerVelocity = new THREE.Vector3();
-const handLocomotion = new THREE.Vector3();
 const PLAYER_RADIUS = .34;
 const PLAYER_HEIGHT = 1.7;
 const FLOOR_Y = 0;
@@ -547,7 +546,6 @@ function catchPlayerWithHands(){
 function movePlayer(dt){
   const previousFeetY = rig.position.y;
   let pushed=false;
-  handLocomotion.set(0,0,0);
   activeSwingThisFrame=false;
 
   if(desktop){
@@ -600,13 +598,15 @@ function movePlayer(dt){
     // into world space before calculating the reaction on the player.
     _delta.copy(c.position).sub(previousHands[i]).applyQuaternion(rig.quaternion);
     const handSpeed = _delta.length() / Math.max(dt,0.001);
-    // Small, deliberate hand strokes count too; only tracking jitter is ignored.
-    if(handSpeed > 0.10){
+    // A hand must actually sweep through space while contacting a surface.
+    // Holding one hand still cannot generate propulsion.
+    if(handSpeed > 0.45){
      const push=handSurfacePush(_hand,_delta);
-     if(push.lengthSq()>0.000004){
-      // Gorilla-style movement: when a planted hand moves against a surface,
-      // move the body in the opposite direction almost one-for-one.
-      handLocomotion.addScaledVector(push,0.96);
+     if(push.lengthSq()>0){
+      // Apply a displacement-based impulse once per moving contact sample.
+      // This avoids the old runaway acceleration from repeatedly adding
+      // hand velocity every rendered frame.
+      playerVelocity.addScaledVector(push,12.0);
       activeSwingThisFrame=true;
       pushed=true;
      }
@@ -625,17 +625,6 @@ function movePlayer(dt){
   // Gravity applies in both desktop and VR modes.
   playerVelocity.y -= 9.8*dt;
   rig.position.addScaledVector(playerVelocity,dt);
-  if(handLocomotion.lengthSq()>0){
-   // Limit only extreme single-frame tracking spikes; normal strokes remain 1:1.
-   const strokeLength=handLocomotion.length();
-   if(strokeLength>0.28)handLocomotion.multiplyScalar(0.28/strokeLength);
-   rig.position.add(handLocomotion);
-   // Convert the hand stroke into momentum as well as immediate displacement.
-   const momentumGain=0.32/Math.max(dt,0.012);
-   playerVelocity.x += handLocomotion.x*momentumGain;
-   playerVelocity.z += handLocomotion.z*momentumGain;
-   playerVelocity.y += handLocomotion.y*momentumGain;
-  }
 
   // Gorilla Tag-style support: there is no automatic feet-floor landing.
   // Gravity continues until one or both tracked hands touch the virtual floor.
@@ -657,7 +646,7 @@ function movePlayer(dt){
   // Momentum fades when the player stops actively swinging. While a hand
   // is making a real push stroke, preserve more speed; otherwise apply
   // substantial damping so the player cannot coast/glide across the arena.
-  const dragRate = activeSwingThisFrame ? 0.12 : (grounded ? 1.65 : 0.62);
+  const dragRate = activeSwingThisFrame ? 0.9 : (grounded ? 5.5 : 2.8);
   const horizontalDrag = Math.exp(-dragRate*dt);
   playerVelocity.x *= horizontalDrag;
   playerVelocity.z *= horizontalDrag;
@@ -670,7 +659,7 @@ function movePlayer(dt){
    playerVelocity.x *= scale;
    playerVelocity.z *= scale;
   }
-  playerVelocity.y = THREE.MathUtils.clamp(playerVelocity.y,-16,11);
+  playerVelocity.y = THREE.MathUtils.clamp(playerVelocity.y,-18,12);
 
   // If tracking is lost and the player falls out of the world, safely respawn.
   if(rig.position.y < -14){
