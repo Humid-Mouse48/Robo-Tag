@@ -26,19 +26,21 @@ button:disabled{opacity:.45;cursor:default}
 <body>
 <main id="menu">
   <h1>ROBO TAG</h1>
-  <p>A fully virtual multiplayer tag world. Explore the arena, move with your controller stick, and tag the player who is glowing red.</p>
+  <p>A fully virtual multiplayer tag world. Push off the ground and platforms with your hands to move, then tag the player glowing red.</p>
   <p><input id="room" maxlength="24" value="lobby" aria-label="Room code" placeholder="Room code"></p>
   <button id="enter" disabled>CHECKING VR SUPPORT…</button>
   <button id="desktop">PLAY ON DESKTOP</button>
   <div id="status">Loading 3D engine…</div>
-  <p id="help">VR: left thumbstick to move, right thumbstick to turn. Desktop: WASD to move, mouse to look (click the world first).</p>
+  <p id="help">VR: push your controller-hands against the ground and platforms to move, just like Gorilla Tag. Desktop: WASD to move, mouse to look.</p>
 </main>
-<div id="hud">ROBO TAG · Left stick: move · Right stick: turn</div>
+<div id="hud">ROBO TAG · Push off surfaces with your hands to move</div>
+<div id="fatal" style="display:none;position:fixed;z-index:10;left:5%;right:5%;bottom:5%;padding:14px 18px;background:#310d16ee;border:1px solid #ff647c;border-radius:12px;color:white;font:14px system-ui;white-space:pre-wrap"></div>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
 </script>
 <script type="module">
 import * as THREE from 'three';
+import { CapsuleGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/CapsuleGeometry.js';
 
 const $ = id => document.getElementById(id);
 const menu = $('menu'), enterBtn = $('enter'), desktopBtn = $('desktop'), statusEl = $('status');
@@ -48,17 +50,30 @@ if (params.get('room')) roomInput.value = params.get('room').slice(0,24);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x86c9f2);
-scene.fog = new THREE.Fog(0x86c9f2, 35, 105);
+scene.fog = new THREE.Fog(0x86c9f2, 100, 260);
 const camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.05, 180);
 const renderer = new THREE.WebGLRenderer({antialias:true, alpha:false, powerPreference:'high-performance'});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
 renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x86c9f2, 1);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
 document.body.appendChild(renderer.domElement);
+const fatalEl = $('fatal');
+function showFatal(message){
+ fatalEl.textContent = 'ROBO TAG ERROR: ' + message;
+ fatalEl.style.display = 'block';
+}
+renderer.domElement.addEventListener('webglcontextlost', e=>{
+ e.preventDefault();
+ showFatal('The WebGL graphics context was lost. Close the VR session and reload the page.');
+});
+window.addEventListener('error', e=>showFatal(e.message || 'Unknown JavaScript error'));
+window.addEventListener('unhandledrejection', e=>showFatal(e.reason?.message || String(e.reason)));
+
 
 const rig = new THREE.Group();
 scene.add(rig);
@@ -86,6 +101,7 @@ ring.rotation.x=Math.PI/2; ring.position.y=0.02; scene.add(ring);
 
 // Rolling hills, rocks, trees and platforms
 const world = new THREE.Group(); scene.add(world);
+const solidColliders = [];
 function addHill(x,z,sx,sy,sz,color){
  const m=new THREE.Mesh(new THREE.SphereGeometry(1,20,14),new THREE.MeshStandardMaterial({color,roughness:1}));
  m.position.set(x,sy*.35,z);m.scale.set(sx,sy,sz);world.add(m);
@@ -97,6 +113,7 @@ for(let i=0;i<24;i++){
 function platform(x,y,z,w,h,d,c=0x9b7653){
  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.9}));
  m.position.set(x,y,z);world.add(m);
+ solidColliders.push({min:new THREE.Vector3(x-w/2,y-h/2,z-d/2),max:new THREE.Vector3(x+w/2,y+h/2,z+d/2)});
  const top=new THREE.Mesh(new THREE.BoxGeometry(w+.04,.12,d+.04),new THREE.MeshStandardMaterial({color:0xb9d18b,roughness:1}));
  top.position.set(x,y+h/2+.04,z);world.add(top);
 }
@@ -105,6 +122,23 @@ platform(-8,2.2,-5,4,4.4,4,0x80634d);
 platform(9,1.7,-3,4,3.4,4,0x80634d);
 platform(-13,1.1,8,5,2.2,5,0x80634d);
 platform(13,2.4,9,5,4.8,5,0x80634d);
+// Spawn landmark: a bright, low circular pad and beacon directly ahead.
+const spawnPad = new THREE.Mesh(
+ new THREE.CylinderGeometry(2.8, 3.1, .22, 48),
+ new THREE.MeshStandardMaterial({color:0x1b7890, metalness:.25, roughness:.55, emissive:0x063342})
+);
+spawnPad.position.set(0,.08,1); world.add(spawnPad);
+const spawnRing = new THREE.Mesh(
+ new THREE.TorusGeometry(2.55,.09,10,64),
+ new THREE.MeshStandardMaterial({color:0x53e5ff, emissive:0x1689a5})
+);
+spawnRing.rotation.x=Math.PI/2; spawnRing.position.set(0,.22,1); world.add(spawnRing);
+const beacon = new THREE.Mesh(
+ new THREE.CylinderGeometry(.08,.08,3,12),
+ new THREE.MeshBasicMaterial({color:0x53e5ff})
+);
+beacon.position.set(0,1.8,-3); world.add(beacon);
+
 function tree(x,z,s=1){
  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.22*s,.34*s,2.4*s,8),new THREE.MeshStandardMaterial({color:0x765034}));
  trunk.position.set(x,1.2*s,z);world.add(trunk);
@@ -141,6 +175,18 @@ const controllers=[0,1].map(i=>{
  return c;
 });
 
+// Simple visible forearms connecting the headset area to each tracked hand.
+const armMaterial = new THREE.MeshStandardMaterial({color:0x278fb2, metalness:.18, roughness:.55});
+const armGeometry = new THREE.CylinderGeometry(.075,.095,1,10);
+const armMeshes = [0,1].map(()=>{const m=new THREE.Mesh(armGeometry,armMaterial);scene.add(m);return m;});
+const _armUp = new THREE.Vector3(0,1,0);
+function placeArm(mesh,a,b){
+ const d=new THREE.Vector3().subVectors(b,a),len=d.length();
+ mesh.position.copy(a).add(b).multiplyScalar(.5);
+ mesh.scale.set(1,Math.max(.001,len),1);
+ mesh.quaternion.setFromUnitVectors(_armUp,d.normalize());
+}
+
 function setTint(mat,it,imm){mat.color.setHex(it?COLORS.it:imm?COLORS.immune:COLORS.normal);mat.emissive?.setHex(it?0x5b0000:0x001c28);}
 
 // Avatar models
@@ -156,7 +202,7 @@ function makeAvatar(){
  const bodyMat=new THREE.MeshStandardMaterial({color:COLORS.normal,metalness:.25,roughness:.38});
  const dark=new THREE.MeshStandardMaterial({color:0x263949,metalness:.35,roughness:.4});
  const head=new THREE.Mesh(new THREE.SphereGeometry(.22,20,16),bodyMat);
- const body=new THREE.Mesh(new THREE.CapsuleGeometry(.19,.42,4,8),bodyMat);
+ const body=new THREE.Mesh(new CapsuleGeometry(.19,.42,4,8),bodyMat);
  const leftArm=new THREE.Mesh(new THREE.CylinderGeometry(.075,.09,1,10),bodyMat);
  const rightArm=leftArm.clone();
  const eyeMat=new THREE.MeshBasicMaterial({color:0x07121c});
@@ -206,9 +252,68 @@ function applyState(players){
  for(const [id,a] of avatars)if(!seen.has(id)){scene.remove(a);avatars.delete(id);}
 }
 
-// Locomotion: left stick moves relative to headset facing; right stick turns smoothly.
+// Gorilla Tag-style hand locomotion for VR.
+// When a tracked hand presses into the floor or a platform, the player rig
+// moves the opposite way. Releasing the hand preserves a little momentum.
 const clock=new THREE.Clock();
 let desktop=false, yaw=0, keys={};
+const playerVelocity = new THREE.Vector3();
+const previousHands = [new THREE.Vector3(), new THREE.Vector3()];
+const handWasTracked = [false,false];
+const handRadius = .14;
+const _head = new THREE.Vector3();
+const _hand = new THREE.Vector3();
+const _delta = new THREE.Vector3();
+const _normal = new THREE.Vector3();
+const _closest = new THREE.Vector3();
+
+function handSurfacePush(handPos, handDelta){
+ let bestPush = new THREE.Vector3();
+ // The entire virtual floor is a pushable surface.
+ if(handPos.y < handRadius + .025){
+  // A planted hand resists sideways motion too; lifting away does not pull.
+  bestPush.x = -handDelta.x;
+  bestPush.z = -handDelta.z;
+  if(handDelta.y < 0) bestPush.y = -handDelta.y;
+ }
+ // Platform tops and sides are solid pushable surfaces.
+ for(const b of solidColliders){
+  _closest.set(
+   THREE.MathUtils.clamp(handPos.x,b.min.x,b.max.x),
+   THREE.MathUtils.clamp(handPos.y,b.min.y,b.max.y),
+   THREE.MathUtils.clamp(handPos.z,b.min.z,b.max.z)
+  );
+  // The upper face of a platform behaves like the floor: planted hands
+  // push the player opposite their sideways/downward movement.
+  const onTop = Math.abs(handPos.y-b.max.y) <= handRadius &&
+    handPos.x >= b.min.x-handRadius && handPos.x <= b.max.x+handRadius &&
+    handPos.z >= b.min.z-handRadius && handPos.z <= b.max.z+handRadius;
+  if(onTop){
+   const topPush = new THREE.Vector3(-handDelta.x,handDelta.y<0?-handDelta.y:0,-handDelta.z);
+   if(topPush.lengthSq()>bestPush.lengthSq()) bestPush.copy(topPush);
+  }
+  _normal.copy(handPos).sub(_closest);
+  let dist=_normal.length();
+  if(dist < 1e-5){
+   const faces=[
+    {d:Math.abs(handPos.x-b.min.x),n:new THREE.Vector3(-1,0,0)},
+    {d:Math.abs(b.max.x-handPos.x),n:new THREE.Vector3(1,0,0)},
+    {d:Math.abs(handPos.y-b.min.y),n:new THREE.Vector3(0,-1,0)},
+    {d:Math.abs(b.max.y-handPos.y),n:new THREE.Vector3(0,1,0)},
+    {d:Math.abs(handPos.z-b.min.z),n:new THREE.Vector3(0,0,-1)},
+    {d:Math.abs(b.max.z-handPos.z),n:new THREE.Vector3(0,0,1)}
+   ].sort((a,b)=>a.d-b.d);
+   _normal.copy(faces[0].n); dist=0;
+  }else _normal.divideScalar(dist);
+  if(dist <= handRadius && handDelta.dot(_normal) < 0){
+   const amount = -handDelta.dot(_normal);
+   const push = _normal.clone().multiplyScalar(amount);
+   if(push.lengthSq()>bestPush.lengthSq())bestPush.copy(push);
+  }
+ }
+ return bestPush;
+}
+
 function movePlayer(dt){
  if(desktop){
   const forward=(keys.KeyW?1:0)-(keys.KeyS?1:0);
@@ -221,29 +326,32 @@ function movePlayer(dt){
   return;
  }
  if(!session)return;
- const source=session.inputSources.find(s=>s.handedness==='left'&&s.gamepad);
- if(source){
-  const axes=source.gamepad.axes;
-  const x=axes.length>=4?axes[2]:axes[0], y=axes.length>=4?axes[3]:axes[1];
-  const dead=.16;
-  if(Math.abs(x)>dead||Math.abs(y)>dead){
-   const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
-   forward.y=0;forward.normalize();
-   const right=new THREE.Vector3().crossVectors(forward,new THREE.Vector3(0,1,0)).normalize();
-   rig.position.addScaledVector(forward,-y*4.2*dt);
-   rig.position.addScaledVector(right,x*4.2*dt);
+ let pushed=false;
+ for(let i=0;i<controllers.length;i++){
+  const c=controllers[i];
+  if(!c.userData.connected){handWasTracked[i]=false;continue;}
+  c.getWorldPosition(_hand);
+  if(!handWasTracked[i]){
+   previousHands[i].copy(c.position);handWasTracked[i]=true;continue;
   }
+  // Use controller-local movement so translating the player rig does not
+  // feed back into the next frame's hand velocity.
+  _delta.copy(c.position).sub(previousHands[i]);
+  const push=handSurfacePush(_hand,_delta);
+  if(push.lengthSq()>0){
+   rig.position.add(push);
+   playerVelocity.addScaledVector(push,Math.min(1/dt,30)*.32);
+   pushed=true;
+  }
+  previousHands[i].copy(c.position);
  }
- const turnSource=session.inputSources.find(s=>s.handedness==='right'&&s.gamepad);
- if(turnSource){
-  const a=turnSource.gamepad.axes;
-  const x=a.length>=4?a[2]:a[0];
-  if(Math.abs(x)>.65){const step=Math.sign(x)*1.8*dt;rig.rotation.y-=step;}
- }
- // Keep the player in the arena and at floor height.
- rig.position.y=0;
+ // Gravity and momentum make pushes feel physical after the hand leaves a surface.
+ playerVelocity.y -= 9.8*dt;
+ playerVelocity.multiplyScalar(Math.pow(pushed ? .985 : .992,dt*60));
+ rig.position.addScaledVector(playerVelocity,dt);
+ if(rig.position.y<0){rig.position.y=0;if(playerVelocity.y<0)playerVelocity.y=0;}
  const radius=Math.hypot(rig.position.x,rig.position.z);
- if(radius>31){rig.position.x*=31/radius;rig.position.z*=31/radius;}
+ if(radius>32){rig.position.x*=32/radius;rig.position.z*=32/radius;}
 }
 
 function playerPoints(){
@@ -257,6 +365,16 @@ function playerPoints(){
 function animate(){
  const dt=Math.min(clock.getDelta(),.05);
  movePlayer(dt);
+ if(session){
+  camera.getWorldPosition(_head);
+  for(let i=0;i<controllers.length;i++){
+   if(controllers[i].userData.connected){
+    controllers[i].getWorldPosition(_hand);
+    placeArm(armMeshes[i],_head,_hand);
+    armMeshes[i].visible=true;
+   }else armMeshes[i].visible=false;
+  }
+ }else armMeshes.forEach(m=>m.visible=false);
  const now=performance.now();
  if(ws?.readyState===WebSocket.OPEN&&now-lastSend>50){
   lastSend=now;const p=playerPoints();
@@ -264,7 +382,13 @@ function animate(){
  }
  renderer.render(scene,camera);
 }
-renderer.setAnimationLoop(animate);
+renderer.setAnimationLoop(()=>{
+ try { animate(); }
+ catch(err) {
+  showFatal(err?.stack || err?.message || String(err));
+  renderer.setAnimationLoop(null);
+ }
+});
 
 function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
 addEventListener('resize',resize);
@@ -277,7 +401,7 @@ async function enterVR(){
  try{
   statusEl.textContent='Starting virtual reality…';
   const s=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor'],optionalFeatures:['hand-tracking']});
-  session=s;desktop=false;camera.position.set(0,0,0);
+  session=s;desktop=false;playerVelocity.set(0,0,0);handWasTracked.fill(false);camera.position.set(0,0,0);
   s.addEventListener('end',()=>{session=null;ws?.close();ws=null;menu.style.display='block';$('hud').style.display='none';statusEl.textContent='VR session ended.';});
   await renderer.xr.setSession(s);
   menu.style.display='none';$('hud').style.display='block';
@@ -286,7 +410,7 @@ async function enterVR(){
  }catch(err){statusEl.textContent='Could not start VR: '+(err?.message||String(err));}
 }
 function enterDesktop(){
- desktop=true;session=null;camera.position.set(0,1.65,0);menu.style.display='none';$('hud').style.display='block';
+ desktop=true;session=null;playerVelocity.set(0,0,0);camera.position.set(0,1.65,0);menu.style.display='none';$('hud').style.display='block';
  camera.position.set(0,1.65,0);rig.position.set(0,0,8);connect();
  statusEl.textContent='Desktop world loaded.';
 }
