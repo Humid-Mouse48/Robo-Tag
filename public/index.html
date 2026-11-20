@@ -31,9 +31,9 @@ button:disabled{opacity:.45;cursor:default}
   <button id="enter" disabled>CHECKING VR SUPPORT…</button>
   <button id="desktop">PLAY ON DESKTOP</button>
   <div id="status">Loading 3D engine…</div>
-  <p id="help">VR: push your controller-hands against the ground and platforms to move, just like Gorilla Tag. Desktop: WASD to move, mouse to look.</p>
+  <p id="help">VR: push your controller-hands against the ground and platforms to move and jump. Desktop: WASD to move, Space to jump, mouse to look.</p>
 </main>
-<div id="hud">ROBO TAG · Push off surfaces with your hands to move</div>
+<div id="hud">ROBO TAG · Push off surfaces with your hands to move and jump</div>
 <div id="fatal" style="display:none;position:fixed;z-index:10;left:5%;right:5%;bottom:5%;padding:14px 18px;background:#310d16ee;border:1px solid #ff647c;border-radius:12px;color:white;font:14px system-ui;white-space:pre-wrap"></div>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
@@ -255,8 +255,9 @@ function applyState(players){
 // When a tracked hand presses into the floor or a platform, the player rig
 // moves the opposite way. Releasing the hand preserves a little momentum.
 const clock=new THREE.Clock();
-let desktop=false, yaw=0, keys={};
+let desktop=false, yaw=0, keys={}, jumpQueued=false, grounded=true;
 const playerVelocity = new THREE.Vector3();
+const PLAYER_RADIUS = .34;
 const previousHands = [new THREE.Vector3(), new THREE.Vector3()];
 const handWasTracked = [false,false];
 const handRadius = .14;
@@ -314,43 +315,76 @@ function handSurfacePush(handPos, handDelta){
 }
 
 function movePlayer(dt){
- if(desktop){
-  const forward=(keys.KeyW?1:0)-(keys.KeyS?1:0);
-  const side=(keys.KeyD?1:0)-(keys.KeyA?1:0);
-  const dir=new THREE.Vector3(side,0,-forward);
-  if(dir.lengthSq())dir.normalize().applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
-  rig.position.addScaledVector(dir,5*dt);
-  if(keys.ArrowLeft)yaw+=1.8*dt;if(keys.ArrowRight)yaw-=1.8*dt;
-  rig.rotation.y=yaw;
-  return;
- }
- if(!session)return;
- let pushed=false;
- for(let i=0;i<controllers.length;i++){
-  const c=controllers[i];
-  if(!c.userData.connected){handWasTracked[i]=false;continue;}
-  c.getWorldPosition(_hand);
-  if(!handWasTracked[i]){
-   previousHands[i].copy(c.position);handWasTracked[i]=true;continue;
+  const previousFeetY = rig.position.y;
+  let pushed=false;
+
+  if(desktop){
+   const forward=(keys.KeyW?1:0)-(keys.KeyS?1:0);
+   const side=(keys.KeyD?1:0)-(keys.KeyA?1:0);
+   const dir=new THREE.Vector3(side,0,-forward);
+   if(dir.lengthSq())dir.normalize().applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
+   rig.position.addScaledVector(dir,5*dt);
+   if(keys.ArrowLeft)yaw+=1.8*dt;if(keys.ArrowRight)yaw-=1.8*dt;
+   rig.rotation.y=yaw;
+  } else if(session){
+   for(let i=0;i<controllers.length;i++){
+    const c=controllers[i];
+    if(!c.userData.connected){handWasTracked[i]=false;continue;}
+    c.getWorldPosition(_hand);
+    if(!handWasTracked[i]){
+     previousHands[i].copy(c.position);handWasTracked[i]=true;continue;
+    }
+    _delta.copy(c.position).sub(previousHands[i]);
+    const push=handSurfacePush(_hand,_delta);
+    if(push.lengthSq()>0){
+     rig.position.add(push);
+     playerVelocity.addScaledVector(push,Math.min(1/dt,30)*.32);
+     // A downward hand push against a surface launches the player upward.
+     if(push.y > .008){
+      playerVelocity.y=Math.max(playerVelocity.y,Math.min(7.5,2.2+push.y/Math.max(dt,.008)*.38));
+     }
+     pushed=true;
+    }
+    previousHands[i].copy(c.position);
+   }
   }
-  // Use controller-local movement so translating the player rig does not
-  // feed back into the next frame's hand velocity.
-  _delta.copy(c.position).sub(previousHands[i]);
-  const push=handSurfacePush(_hand,_delta);
-  if(push.lengthSq()>0){
-   rig.position.add(push);
-   playerVelocity.addScaledVector(push,Math.min(1/dt,30)*.32);
-   pushed=true;
+
+  // Space jumps on desktop; in VR, push down with a hand against a surface.
+  if(jumpQueued && grounded){
+   playerVelocity.y=6.4;
+   grounded=false;
   }
-  previousHands[i].copy(c.position);
- }
- // Gravity and momentum make pushes feel physical after the hand leaves a surface.
- playerVelocity.y -= 9.8*dt;
- playerVelocity.multiplyScalar(Math.pow(pushed ? .985 : .992,dt*60));
- rig.position.addScaledVector(playerVelocity,dt);
- if(rig.position.y<0){rig.position.y=0;if(playerVelocity.y<0)playerVelocity.y=0;}
- const radius=Math.hypot(rig.position.x,rig.position.z);
- if(radius>32){rig.position.x*=32/radius;rig.position.z*=32/radius;}
+  jumpQueued=false;
+
+  // Gravity applies in both desktop and VR modes.
+  playerVelocity.y -= 9.8*dt;
+  playerVelocity.multiplyScalar(Math.pow(pushed ? .988 : .997,dt*60));
+  rig.position.addScaledVector(playerVelocity,dt);
+
+  // Land on the world floor.
+  grounded=false;
+  if(rig.position.y<=0){
+   rig.position.y=0;
+   if(playerVelocity.y<0)playerVelocity.y=0;
+   grounded=true;
+  }
+
+  // Land on platform tops; the rig origin represents the player's feet.
+  if(playerVelocity.y<=0){
+   for(const b of solidColliders){
+    const overlapsX=rig.position.x+PLAYER_RADIUS>b.min.x && rig.position.x-PLAYER_RADIUS<b.max.x;
+    const overlapsZ=rig.position.z+PLAYER_RADIUS>b.min.z && rig.position.z-PLAYER_RADIUS<b.max.z;
+    const top=b.max.y;
+    if(overlapsX && overlapsZ && previousFeetY>=top-.08 && rig.position.y<=top){
+     rig.position.y=top;
+     playerVelocity.y=0;
+     grounded=true;
+    }
+   }
+  }
+
+  const radius=Math.hypot(rig.position.x,rig.position.z);
+  if(radius>32){rig.position.x*=32/radius;rig.position.z*=32/radius;}
 }
 
 function playerPoints(){
@@ -391,7 +425,7 @@ renderer.setAnimationLoop(()=>{
 
 function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
 addEventListener('resize',resize);
-addEventListener('keydown',e=>{keys[e.code]=true;});
+addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='Space'&&!e.repeat){jumpQueued=true;e.preventDefault();}});
 addEventListener('keyup',e=>{keys[e.code]=false;});
 renderer.domElement.addEventListener('click',()=>{if(desktop&&!document.pointerLockElement)renderer.domElement.requestPointerLock?.();});
 addEventListener('mousemove',e=>{if(desktop&&document.pointerLockElement){yaw-=e.movementX*.002;rig.rotation.y=yaw;}});
