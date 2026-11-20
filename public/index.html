@@ -21,6 +21,14 @@ button:disabled{opacity:.45;cursor:default}
 #status{min-height:2.5em;font-size:.9rem;color:#b7cadc;margin-top:14px}
 #help{font-size:.82rem;color:#91a9c2}
 #hud{position:fixed;z-index:1;top:14px;left:50%;transform:translateX(-50%);padding:8px 14px;border-radius:99px;background:#06101dcc;border:1px solid #39718d;color:#dff9ff;display:none;pointer-events:none}
+#vrSettings{display:none;position:fixed;z-index:20;left:50%;top:50%;transform:translate(-50%,-50%);width:min(86vw,420px);max-height:82vh;overflow:auto;padding:22px;border:1px solid #53e5ff;border-radius:20px;background:rgba(4,13,28,.96);color:#edf5ff;text-align:left;box-shadow:0 12px 50px #000b;pointer-events:auto}
+#vrSettings h2{margin:0 0 8px;color:#53e5ff}
+#vrSettings p{font-size:.9rem;color:#b9cde0;margin:8px 0 16px}
+#vrSettings label{display:block;margin:14px 0 6px;font-weight:700}
+#vrSettings input[type=range],#vrSettings select{width:100%;accent-color:#53e5ff}
+#vrSettings .setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#vrSettings button{margin-top:16px;background:#197caa}
+#vrSettings .hint{font-size:.78rem;color:#8faac2}
 </style>
 </head>
 <body>
@@ -31,9 +39,26 @@ button:disabled{opacity:.45;cursor:default}
   <button id="enter" disabled>CHECKING VR SUPPORT…</button>
   <button id="desktop">PLAY ON DESKTOP</button>
   <div id="status">Loading 3D engine…</div>
-  <p id="help">VR: gravity lowers you until your tracked hands physically contact the floor; hands cannot pass through it. Plant a hand and swing/push against the floor or platforms. Arm movement transfers continuous calculated velocity to the player, so faster swings create faster movement. Desktop: WASD to move, Space to jump, mouse to look.</p>
+  <p id="help">VR: gravity lowers you until your tracked hands physically contact the floor; hands cannot pass through it. Plant a hand and swing/push against the floor or platforms. Only moving arm strokes against the floor or platforms propel you; holding a hand still will not move you. Momentum slows when you stop swinging. Turn with the right thumbstick. Press Y on the left controller for settings. Desktop: WASD to move, Space to jump, mouse to look.</p>
 </main>
-<div id="hud">ROBO TAG · Swing your arms against surfaces to move</div>
+<div id="hud">ROBO TAG · Swing your arms to move · Press Y on the left controller for settings</div>
+<div id="vrSettings">
+ <h2>ROBO TAG SETTINGS</h2>
+ <p>Movement and turning options</p>
+ <div class="setting-row">
+  <label for="rotateEnabled">Rotate</label>
+  <input id="rotateEnabled" type="checkbox" checked>
+ </div>
+ <label for="rotateType">Rotate type</label>
+ <select id="rotateType">
+  <option value="snap">Snap</option>
+  <option value="smooth">Smooth</option>
+ </select>
+ <label for="rotateSpeed">Rotate speed: <span id="rotateSpeedValue">120</span>°/sec</label>
+ <input id="rotateSpeed" type="range" min="30" max="240" step="10" value="120">
+ <p class="hint">Use the right thumbstick left or right to turn. Press Y on the left controller to open or close this panel. The Quest system Menu button itself is reserved by the headset.</p>
+ <button id="closeSettings">CLOSE SETTINGS</button>
+</div>
 <div id="fatal" style="display:none;position:fixed;z-index:10;left:5%;right:5%;bottom:5%;padding:14px 18px;background:#310d16ee;border:1px solid #ff647c;border-radius:12px;color:white;font:14px system-ui;white-space:pre-wrap"></div>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
@@ -126,6 +151,8 @@ function platform(x,y,z,w,h,d,c=0x9b7653){
  addBoxCollider(x,y,z,w,h,d);
  const top=new THREE.Mesh(new THREE.BoxGeometry(w+.04,.12,d+.04),new THREE.MeshStandardMaterial({color:0xb9d18b,roughness:1}));
  top.position.set(x,y+h/2+.04,z);world.add(top);
+ // The visible grass cap has its own exact collision volume.
+ addBoxCollider(x,y+h/2+.04,z,w+.04,.12,d+.04);
 }
 platform(0,1.2,-10,5,2.4,5,0x80634d);
 platform(-8,2.2,-5,4,4.4,4,0x80634d);
@@ -212,7 +239,7 @@ function makeAvatar(){
  const bodyMat=new THREE.MeshStandardMaterial({color:COLORS.normal,metalness:.25,roughness:.38});
  const dark=new THREE.MeshStandardMaterial({color:0x263949,metalness:.35,roughness:.4});
  const head=new THREE.Mesh(new THREE.SphereGeometry(.22,20,16),bodyMat);
- const body=new THREE.Mesh(new THREE.CylinderGeometry(.19,.19,.42,16,1,false),bodyMat);
+ const body=new THREE.Mesh(new THREE.CylinderGeometry(.19,.19,.30,16,1,false),bodyMat);
  const leftArm=new THREE.Mesh(new THREE.CylinderGeometry(.075,.09,1,10),bodyMat);
  const rightArm=leftArm.clone();
  const eyeMat=new THREE.MeshBasicMaterial({color:0x07121c});
@@ -229,9 +256,9 @@ function makeAvatar(){
 function updateAvatar(a,p){
  const h=new THREE.Vector3(...p.h),l=new THREE.Vector3(...p.l),r=new THREE.Vector3(...p.r);
  a.userData.head.position.copy(h);
- a.userData.body.position.set(h.x,h.y-.43,h.z);
- const shoulderL=h.clone().add(new THREE.Vector3(-.19,-.2,0));
- const shoulderR=h.clone().add(new THREE.Vector3(.19,-.2,0));
+ a.userData.body.position.set(h.x,h.y-.36,h.z);
+ const shoulderL=h.clone().add(new THREE.Vector3(-.19,-.16,0));
+ const shoulderR=h.clone().add(new THREE.Vector3(.19,-.16,0));
  segment(a.userData.leftArm,shoulderL,l,.08);
  segment(a.userData.rightArm,shoulderR,r,.08);
 }
@@ -267,6 +294,29 @@ function applyState(players){
 // moves the opposite way. Releasing the hand preserves a little momentum.
 const clock=new THREE.Clock();
 let desktop=false, yaw=0, keys={}, jumpQueued=false, grounded=true;
+let activeSwingThisFrame=false;
+let rotateEnabled=true, rotateType='snap', rotateSpeed=120;
+let snapTurnReady=true, settingsVisible=false, leftYWasPressed=false;
+let snapTurnCooldown=0;
+const settingsPanel=$('vrSettings');
+const rotateEnabledInput=$('rotateEnabled');
+const rotateTypeInput=$('rotateType');
+const rotateSpeedInput=$('rotateSpeed');
+const rotateSpeedValue=$('rotateSpeedValue');
+function setSettingsVisible(show){
+ settingsVisible=!!show;
+ settingsPanel.style.display=settingsVisible?'block':'none';
+}
+rotateEnabledInput.addEventListener('change',()=>rotateEnabled=rotateEnabledInput.checked);
+rotateTypeInput.addEventListener('change',()=>rotateType=rotateTypeInput.value);
+rotateSpeedInput.addEventListener('input',()=>{
+ rotateSpeed=Number(rotateSpeedInput.value);
+ rotateSpeedValue.textContent=String(rotateSpeed);
+});
+$('closeSettings').addEventListener('click',()=>setSettingsVisible(false));
+addEventListener('keydown',e=>{
+ if(e.code==='Escape' && session){setSettingsVisible(!settingsVisible);e.preventDefault();}
+});
 const playerVelocity = new THREE.Vector3();
 const PLAYER_RADIUS = .34;
 const PLAYER_HEIGHT = 1.7;
@@ -410,6 +460,7 @@ function catchPlayerWithHands(){
 function movePlayer(dt){
   const previousFeetY = rig.position.y;
   let pushed=false;
+  activeSwingThisFrame=false;
 
   if(desktop){
    const forward=(keys.KeyW?1:0)-(keys.KeyS?1:0);
@@ -420,6 +471,36 @@ function movePlayer(dt){
    if(keys.ArrowLeft)yaw+=1.8*dt;if(keys.ArrowRight)yaw-=1.8*dt;
    rig.rotation.y=yaw;
   } else if(session){
+   let turnAxis=0;
+   let leftYPressed=false;
+   for(const source of session.inputSources){
+    const gp=source.gamepad;
+    if(!gp) continue;
+    if(source.handedness==='right'){
+     const axes=gp.axes||[];
+     turnAxis=Math.abs(axes[2]||0)>.12?(axes[2]||0):(axes[0]||0);
+    }
+    if(source.handedness==='left'){
+     const buttons=gp.buttons||[];
+     // WebXR standard gamepad mapping: button 5 is the left Y face button.
+     leftYPressed=!!(buttons[5]?.pressed || buttons[4]?.pressed && buttons.length===5);
+    }
+   }
+   if(leftYPressed && !leftYWasPressed) setSettingsVisible(!settingsVisible);
+   leftYWasPressed=leftYPressed;
+
+   if(rotateEnabled && !settingsVisible){
+    if(rotateType==='smooth'){
+     if(Math.abs(turnAxis)>.16) yaw -= turnAxis*(rotateSpeed*Math.PI/180)*dt;
+    }else{
+     snapTurnCooldown=Math.max(0,snapTurnCooldown-dt);
+     if(Math.abs(turnAxis)>.72 && snapTurnCooldown<=0){
+      yaw -= Math.sign(turnAxis)*Math.PI/4;
+      snapTurnCooldown=Math.max(.12,45/rotateSpeed);
+     }
+    }
+    rig.rotation.y=yaw;
+   }
    for(let i=0;i<controllers.length;i++){
     const c=controllers[i];
     if(!c.userData.connected){handWasTracked[i]=false;continue;}
@@ -430,12 +511,19 @@ function movePlayer(dt){
     // Controller positions are rig-local; convert the measured arm movement
     // into world space before calculating the reaction on the player.
     _delta.copy(c.position).sub(previousHands[i]).applyQuaternion(rig.quaternion);
-    const push=handSurfacePush(_hand,_delta);
-    if(push.lengthSq()>0){
-     // Continuous impulse transfer: the opposite of the hand's movement
-     // becomes player velocity. No jump threshold or fixed launch bonus.
-     playerVelocity.addScaledVector(push,0.88/Math.max(dt,0.001));
-     pushed=true;
+    const handSpeed = _delta.length() / Math.max(dt,0.001);
+    // A hand must actually sweep through space while contacting a surface.
+    // Holding one hand still cannot generate propulsion.
+    if(handSpeed > 0.45){
+     const push=handSurfacePush(_hand,_delta);
+     if(push.lengthSq()>0){
+      // Apply a displacement-based impulse once per moving contact sample.
+      // This avoids the old runaway acceleration from repeatedly adding
+      // hand velocity every rendered frame.
+      playerVelocity.addScaledVector(push,12.0);
+      activeSwingThisFrame=true;
+      pushed=true;
+     }
     }
     previousHands[i].copy(c.position);
    }
@@ -469,11 +557,11 @@ function movePlayer(dt){
   const bodyGrounded = resolvePlayerCollisions(previousFeetY);
   grounded = handGrounded || desktopGrounded || bodyGrounded;
 
-  // High-grip control: strongly brake horizontal drift while supported, with
-  // gentle air drag so momentum remains controllable without feeling icy.
-  // Low, continuous air resistance preserves momentum after a strong swing.
-  // Ground contact no longer applies the heavy braking that caused tiny steps.
-  const horizontalDrag = grounded ? Math.exp(-0.22*dt) : Math.exp(-0.10*dt);
+  // Momentum fades when the player stops actively swinging. While a hand
+  // is making a real push stroke, preserve more speed; otherwise apply
+  // substantial damping so the player cannot coast/glide across the arena.
+  const dragRate = activeSwingThisFrame ? 0.9 : (grounded ? 5.5 : 2.8);
+  const horizontalDrag = Math.exp(-dragRate*dt);
   playerVelocity.x *= horizontalDrag;
   playerVelocity.z *= horizontalDrag;
 
@@ -549,9 +637,13 @@ addEventListener('mousemove',e=>{if(desktop&&document.pointerLockElement){yaw-=e
 async function enterVR(){
  try{
   statusEl.textContent='Starting virtual reality…';
-  const s=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor'],optionalFeatures:['hand-tracking']});
-  session=s;desktop=false;playerVelocity.set(0,0,0);handWasTracked.fill(false);camera.position.set(0,0,0);
-  s.addEventListener('end',()=>{session=null;ws?.close();ws=null;menu.style.display='block';$('hud').style.display='none';statusEl.textContent='VR session ended.';});
+  const s=await navigator.xr.requestSession('immersive-vr',{
+   requiredFeatures:['local-floor'],
+   optionalFeatures:['hand-tracking','dom-overlay'],
+   domOverlay:{root:settingsPanel}
+  });
+  session=s;desktop=false;playerVelocity.set(0,0,0);handWasTracked.fill(false);leftYWasPressed=false;snapTurnCooldown=0;yaw=0;camera.position.set(0,0,0);
+  s.addEventListener('end',()=>{session=null;setSettingsVisible(false);ws?.close();ws=null;menu.style.display='block';$('hud').style.display='none';statusEl.textContent='VR session ended.';});
   await renderer.xr.setSession(s);
   menu.style.display='none';$('hud').style.display='block';
   rig.position.set(0,FLOOR_Y,8);rig.rotation.set(0,0,0);
