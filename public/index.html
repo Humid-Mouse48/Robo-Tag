@@ -39,8 +39,7 @@ button:disabled{opacity:.45;cursor:default}
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
 </script>
 <script type="module">
-import * as THREE from 'three';
-import { CapsuleGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/CapsuleGeometry.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
 const $ = id => document.getElementById(id);
 const menu = $('menu'), enterBtn = $('enter'), desktopBtn = $('desktop'), statusEl = $('status');
@@ -202,7 +201,7 @@ function makeAvatar(){
  const bodyMat=new THREE.MeshStandardMaterial({color:COLORS.normal,metalness:.25,roughness:.38});
  const dark=new THREE.MeshStandardMaterial({color:0x263949,metalness:.35,roughness:.4});
  const head=new THREE.Mesh(new THREE.SphereGeometry(.22,20,16),bodyMat);
- const body=new THREE.Mesh(new CapsuleGeometry(.19,.42,4,8),bodyMat);
+ const body=new THREE.Mesh(new THREE.CylinderGeometry(.19,.19,.42,16,1,false),bodyMat);
  const leftArm=new THREE.Mesh(new THREE.CylinderGeometry(.075,.09,1,10),bodyMat);
  const rightArm=leftArm.clone();
  const eyeMat=new THREE.MeshBasicMaterial({color:0x07121c});
@@ -412,7 +411,7 @@ async function enterVR(){
 function enterDesktop(){
  desktop=true;session=null;playerVelocity.set(0,0,0);camera.position.set(0,1.65,0);menu.style.display='none';$('hud').style.display='block';
  camera.position.set(0,1.65,0);rig.position.set(0,0,8);connect();
- statusEl.textContent='Desktop world loaded.';
+ statusEl.textContent='3D engine loaded. Desktop world loaded.';
 }
 enterBtn.addEventListener('click',enterVR);
 desktopBtn.addEventListener('click',enterDesktop);
@@ -422,7 +421,7 @@ desktopBtn.addEventListener('click',enterDesktop);
   if(!navigator.xr){enterBtn.disabled=true;enterBtn.textContent='VR NOT AVAILABLE';statusEl.textContent='WebXR VR is not available in this browser. You can still use Play on Desktop.';return;}
   const ok=await navigator.xr.isSessionSupported('immersive-vr').catch(()=>false);
   enterBtn.disabled=!ok;enterBtn.textContent=ok?'ENTER VIRTUAL VR':'VR NOT SUPPORTED';
-  statusEl.textContent=ok?'Virtual VR world ready.':'This browser/device does not support immersive VR. Try Quest Browser on a supported headset.';
+  statusEl.textContent=ok?'3D engine loaded. Virtual VR world ready.':'3D engine loaded. This browser/device does not support immersive VR. Try Quest Browser on a supported headset.';
  }catch(e){statusEl.textContent='VR check failed: '+e.message;}
 })();
 </script>
