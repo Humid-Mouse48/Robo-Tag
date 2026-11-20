@@ -31,7 +31,7 @@ button:disabled{opacity:.45;cursor:default}
   <button id="enter" disabled>CHECKING VR SUPPORT…</button>
   <button id="desktop">PLAY ON DESKTOP</button>
   <div id="status">Loading 3D engine…</div>
-  <p id="help">VR: push your controller-hands against the ground and platforms to move and jump. Desktop: WASD to move, Space to jump, mouse to look.</p>
+  <p id="help">VR: stand normally; your feet start at the virtual floor. Push your controller-hands against the floor and platforms to move and jump. Desktop: WASD to move, Space to jump, mouse to look.</p>
 </main>
 <div id="hud">ROBO TAG · Push off surfaces with your hands to move and jump</div>
 <div id="fatal" style="display:none;position:fixed;z-index:10;left:5%;right:5%;bottom:5%;padding:14px 18px;background:#310d16ee;border:1px solid #ff647c;border-radius:12px;color:white;font:14px system-ui;white-space:pre-wrap"></div>
@@ -101,9 +101,17 @@ ring.rotation.x=Math.PI/2; ring.position.y=0.02; scene.add(ring);
 // Rolling hills, rocks, trees and platforms
 const world = new THREE.Group(); scene.add(world);
 const solidColliders = [];
+function addBoxCollider(x,y,z,w,h,d){
+ solidColliders.push({
+  min:new THREE.Vector3(x-w/2,y-h/2,z-d/2),
+  max:new THREE.Vector3(x+w/2,y+h/2,z+d/2)
+ });
+}
 function addHill(x,z,sx,sy,sz,color){
  const m=new THREE.Mesh(new THREE.SphereGeometry(1,20,14),new THREE.MeshStandardMaterial({color,roughness:1}));
  m.position.set(x,sy*.35,z);m.scale.set(sx,sy,sz);world.add(m);
+ // Conservative ellipsoid bounds keep players from walking through the hills.
+ addBoxCollider(x,m.position.y,z,sx*2,sy*2,sz*2);
 }
 for(let i=0;i<24;i++){
  const a=i/24*Math.PI*2, r=39+(i%3)*5;
@@ -112,7 +120,7 @@ for(let i=0;i<24;i++){
 function platform(x,y,z,w,h,d,c=0x9b7653){
  const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.9}));
  m.position.set(x,y,z);world.add(m);
- solidColliders.push({min:new THREE.Vector3(x-w/2,y-h/2,z-d/2),max:new THREE.Vector3(x+w/2,y+h/2,z+d/2)});
+ addBoxCollider(x,y,z,w,h,d);
  const top=new THREE.Mesh(new THREE.BoxGeometry(w+.04,.12,d+.04),new THREE.MeshStandardMaterial({color:0xb9d18b,roughness:1}));
  top.position.set(x,y+h/2+.04,z);world.add(top);
 }
@@ -126,7 +134,7 @@ const spawnPad = new THREE.Mesh(
  new THREE.CylinderGeometry(2.8, 3.1, .22, 48),
  new THREE.MeshStandardMaterial({color:0x1b7890, metalness:.25, roughness:.55, emissive:0x063342})
 );
-spawnPad.position.set(0,.08,1); world.add(spawnPad);
+spawnPad.position.set(0,.08,1); world.add(spawnPad); addBoxCollider(0,.08,1,6.2,.22,6.2);
 const spawnRing = new THREE.Mesh(
  new THREE.TorusGeometry(2.55,.09,10,64),
  new THREE.MeshStandardMaterial({color:0x53e5ff, emissive:0x1689a5})
@@ -140,10 +148,10 @@ beacon.position.set(0,1.8,-3); world.add(beacon);
 
 function tree(x,z,s=1){
  const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.22*s,.34*s,2.4*s,8),new THREE.MeshStandardMaterial({color:0x765034}));
- trunk.position.set(x,1.2*s,z);world.add(trunk);
+ trunk.position.set(x,1.2*s,z);world.add(trunk);addBoxCollider(x,1.2*s,z,.75*s,2.4*s,.75*s);
  for(let j=0;j<3;j++){
   const crown=new THREE.Mesh(new THREE.ConeGeometry(1.35*s,2.2*s,8),new THREE.MeshStandardMaterial({color:j===0?0x237b4b:0x2f9255,roughness:1}));
-  crown.position.set(x,(2.4+j*.65)*s,z);world.add(crown);
+  crown.position.set(x,(2.4+j*.65)*s,z);world.add(crown);addBoxCollider(x,(2.4+j*.65)*s,z,2.7*s,2.2*s,2.7*s);
  }
 }
 for(const [x,z,s] of [[-22,-16,1.3],[22,-18,1.1],[-24,17,1.2],[24,18,1.4],[-15,25,.9],[16,25,1]]) tree(x,z,s);
@@ -258,6 +266,60 @@ const clock=new THREE.Clock();
 let desktop=false, yaw=0, keys={}, jumpQueued=false, grounded=true;
 const playerVelocity = new THREE.Vector3();
 const PLAYER_RADIUS = .34;
+const PLAYER_HEIGHT = 1.7;
+const FLOOR_Y = 0;
+const _pushOut = new THREE.Vector3();
+
+function resolvePlayerCollisions(previousFeetY){
+ // Keep the player's feet on the floor baseline, while allowing the tracked
+ // headset to remain at natural standing height above it.
+ let landed=false;
+ if(rig.position.y < FLOOR_Y){
+  rig.position.y=FLOOR_Y;
+  if(playerVelocity.y<0)playerVelocity.y=0;
+  landed=true;
+ }
+
+ // Resolve solid world objects as a standing capsule approximated by a
+ // vertical cylinder. This covers platform sides, trees, foliage and hills.
+ for(const b of solidColliders){
+  const feet=rig.position.y, head=feet+PLAYER_HEIGHT;
+  if(head <= b.min.y || feet >= b.max.y) continue;
+
+  const cx=THREE.MathUtils.clamp(rig.position.x,b.min.x,b.max.x);
+  const cz=THREE.MathUtils.clamp(rig.position.z,b.min.z,b.max.z);
+  let dx=rig.position.x-cx, dz=rig.position.z-cz;
+  let distSq=dx*dx+dz*dz;
+  if(distSq < PLAYER_RADIUS*PLAYER_RADIUS){
+   if(distSq < 1e-8){
+    const options=[
+     {d:Math.abs(rig.position.x-b.min.x),x:-1,z:0},
+     {d:Math.abs(b.max.x-rig.position.x),x:1,z:0},
+     {d:Math.abs(rig.position.z-b.min.z),x:0,z:-1},
+     {d:Math.abs(b.max.z-rig.position.z),x:0,z:1}
+    ].sort((a,b)=>a.d-b.d);
+    dx=options[0].x;dz=options[0].z;distSq=1;
+   }
+   const dist=Math.sqrt(distSq);
+   const nx=dx/dist,nz=dz/dist;
+   const overlap=PLAYER_RADIUS-dist;
+   rig.position.x+=nx*overlap;
+   rig.position.z+=nz*overlap;
+   const into=playerVelocity.x*nx+playerVelocity.z*nz;
+   if(into<0){playerVelocity.x-=into*nx;playerVelocity.z-=into*nz;}
+  }
+
+  // A box top is a walkable landing surface when descending onto it.
+  const overlapsX=rig.position.x+PLAYER_RADIUS>b.min.x && rig.position.x-PLAYER_RADIUS<b.max.x;
+  const overlapsZ=rig.position.z+PLAYER_RADIUS>b.min.z && rig.position.z-PLAYER_RADIUS<b.max.z;
+  if(overlapsX&&overlapsZ&&playerVelocity.y<=0&&previousFeetY>=b.max.y-.12&&rig.position.y<=b.max.y){
+   rig.position.y=b.max.y;
+   playerVelocity.y=0;
+   landed=true;
+  }
+ }
+ return landed;
+}
 const previousHands = [new THREE.Vector3(), new THREE.Vector3()];
 const handWasTracked = [false,false];
 const handRadius = .14;
@@ -361,30 +423,16 @@ function movePlayer(dt){
   playerVelocity.multiplyScalar(Math.pow(pushed ? .988 : .997,dt*60));
   rig.position.addScaledVector(playerVelocity,dt);
 
-  // Land on the world floor.
-  grounded=false;
-  if(rig.position.y<=0){
-   rig.position.y=0;
-   if(playerVelocity.y<0)playerVelocity.y=0;
-   grounded=true;
-  }
-
-  // Land on platform tops; the rig origin represents the player's feet.
-  if(playerVelocity.y<=0){
-   for(const b of solidColliders){
-    const overlapsX=rig.position.x+PLAYER_RADIUS>b.min.x && rig.position.x-PLAYER_RADIUS<b.max.x;
-    const overlapsZ=rig.position.z+PLAYER_RADIUS>b.min.z && rig.position.z-PLAYER_RADIUS<b.max.z;
-    const top=b.max.y;
-    if(overlapsX && overlapsZ && previousFeetY>=top-.08 && rig.position.y<=top){
-     rig.position.y=top;
-     playerVelocity.y=0;
-     grounded=true;
-    }
-   }
-  }
+  // Resolve floor and every registered solid. The rig origin is the player's
+  // feet, so local-floor VR keeps the headset at normal standing height.
+  grounded=resolvePlayerCollisions(previousFeetY);
 
   const radius=Math.hypot(rig.position.x,rig.position.z);
-  if(radius>32){rig.position.x*=32/radius;rig.position.z*=32/radius;}
+  if(radius>32){rig.position.x*=32/radius;rig.position.z*=32/radius;
+   const outward=new THREE.Vector3(rig.position.x,0,rig.position.z).normalize();
+   const into=playerVelocity.dot(outward);
+   if(into>0)playerVelocity.addScaledVector(outward,-into);
+  }
 }
 
 function playerPoints(){
@@ -438,7 +486,7 @@ async function enterVR(){
   s.addEventListener('end',()=>{session=null;ws?.close();ws=null;menu.style.display='block';$('hud').style.display='none';statusEl.textContent='VR session ended.';});
   await renderer.xr.setSession(s);
   menu.style.display='none';$('hud').style.display='block';
-  rig.position.set(0,0,8);rig.rotation.set(0,0,0);
+  rig.position.set(0,FLOOR_Y,8);rig.rotation.set(0,0,0);
   connect();
  }catch(err){statusEl.textContent='Could not start VR: '+(err?.message||String(err));}
 }
