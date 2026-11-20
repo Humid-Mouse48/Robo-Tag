@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Robo Tag — Virtual World</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;font-family:system-ui,sans-serif;background:#080d18;color:#edf5ff}
+body{display:grid;place-items:center}
+canvas{position:fixed;inset:0;display:block;width:100%;height:100%;z-index:0}
+main{position:relative;z-index:2;width:min(92vw,440px);padding:26px;border:1px solid #3a7894;background:rgba(5,13,27,.9);border-radius:22px;box-shadow:0 20px 80px #0009;text-align:center}
+h1{margin:0 0 8px;font-size:clamp(2rem,8vw,3rem);letter-spacing:.08em;color:#53e5ff}
+p{line-height:1.5;color:#c2d3e8}
+input,button{font:inherit;border-radius:12px}
+input{width:100%;padding:13px;background:#111e31;color:white;border:1px solid #41617e;text-align:center;font-size:1.1rem;letter-spacing:.12em}
+button{width:100%;padding:14px 18px;border:0;background:#ff603d;color:white;font-weight:800;font-size:1.1rem;cursor:pointer;margin-top:12px}
+button:disabled{opacity:.45;cursor:default}
+#desktop{background:#197caa}
+#status{min-height:2.5em;font-size:.9rem;color:#b7cadc;margin-top:14px}
+#help{font-size:.82rem;color:#91a9c2}
+#hud{position:fixed;z-index:1;top:14px;left:50%;transform:translateX(-50%);padding:8px 14px;border-radius:99px;background:#06101dcc;border:1px solid #39718d;color:#dff9ff;display:none;pointer-events:none}
+</style>
+</head>
+<body>
+<main id="menu">
+  <h1>ROBO TAG</h1>
+  <p>A fully virtual multiplayer tag world. Explore the arena, move with your controller stick, and tag the player who is glowing red.</p>
+  <p><input id="room" maxlength="24" value="lobby" aria-label="Room code" placeholder="Room code"></p>
+  <button id="enter" disabled>CHECKING VR SUPPORT…</button>
+  <button id="desktop">PLAY ON DESKTOP</button>
+  <div id="status">Loading 3D engine…</div>
+  <p id="help">VR: left thumbstick to move, right thumbstick to turn. Desktop: WASD to move, mouse to look (click the world first).</p>
+</main>
+<div id="hud">ROBO TAG · Left stick: move · Right stick: turn</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const $ = id => document.getElementById(id);
+const menu = $('menu'), enterBtn = $('enter'), desktopBtn = $('desktop'), statusEl = $('status');
+const roomInput = $('room');
+const params = new URLSearchParams(location.search);
+if (params.get('room')) roomInput.value = params.get('room').slice(0,24);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x86c9f2);
+scene.fog = new THREE.Fog(0x86c9f2, 35, 105);
+const camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.05, 180);
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:false, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.appendChild(renderer.domElement);
+
+const rig = new THREE.Group();
+scene.add(rig);
+rig.add(camera);
+camera.position.set(0, 1.65, 0);
+rig.position.set(0, 0, 8);
+
+scene.add(new THREE.HemisphereLight(0xdff4ff, 0x526044, 2.0));
+const sun = new THREE.DirectionalLight(0xfff1d2, 2.3);
+sun.position.set(-18, 30, 12); scene.add(sun);
+
+// Virtual sky dome and distant horizon
+const sky = new THREE.Mesh(new THREE.SphereGeometry(150, 32, 20), new THREE.MeshBasicMaterial({color:0x83c8f2, side:THREE.BackSide}));
+scene.add(sky);
+const groundMat = new THREE.MeshStandardMaterial({color:0x4e9b55, roughness:1});
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(240,240), groundMat);
+ground.rotation.x = -Math.PI/2; ground.position.y = -0.06; scene.add(ground);
+
+// Arena floor with readable grid and boundary
+const arena = new THREE.Mesh(new THREE.CircleGeometry(34,64), new THREE.MeshStandardMaterial({color:0x5fae62, roughness:0.95}));
+arena.rotation.x=-Math.PI/2; arena.position.y=-0.035; scene.add(arena);
+const grid = new THREE.GridHelper(68,68,0x9bd28a,0x79b77b); grid.position.y=-0.02; scene.add(grid);
+const ring = new THREE.Mesh(new THREE.TorusGeometry(34,0.18,8,128), new THREE.MeshStandardMaterial({color:0x35d7ee, emissive:0x087b91}));
+ring.rotation.x=Math.PI/2; ring.position.y=0.02; scene.add(ring);
+
+// Rolling hills, rocks, trees and platforms
+const world = new THREE.Group(); scene.add(world);
+function addHill(x,z,sx,sy,sz,color){
+ const m=new THREE.Mesh(new THREE.SphereGeometry(1,20,14),new THREE.MeshStandardMaterial({color,roughness:1}));
+ m.position.set(x,sy*.35,z);m.scale.set(sx,sy,sz);world.add(m);
+}
+for(let i=0;i<24;i++){
+ const a=i/24*Math.PI*2, r=39+(i%3)*5;
+ addHill(Math.cos(a)*r,Math.sin(a)*r,7+(i%4),5+(i%3)*2,8+(i%5),i%2?0x5b9d68:0x79ad73);
+}
+function platform(x,y,z,w,h,d,c=0x9b7653){
+ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:.9}));
+ m.position.set(x,y,z);world.add(m);
+ const top=new THREE.Mesh(new THREE.BoxGeometry(w+.04,.12,d+.04),new THREE.MeshStandardMaterial({color:0xb9d18b,roughness:1}));
+ top.position.set(x,y+h/2+.04,z);world.add(top);
+}
+platform(0,1.2,-10,5,2.4,5,0x80634d);
+platform(-8,2.2,-5,4,4.4,4,0x80634d);
+platform(9,1.7,-3,4,3.4,4,0x80634d);
+platform(-13,1.1,8,5,2.2,5,0x80634d);
+platform(13,2.4,9,5,4.8,5,0x80634d);
+function tree(x,z,s=1){
+ const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.22*s,.34*s,2.4*s,8),new THREE.MeshStandardMaterial({color:0x765034}));
+ trunk.position.set(x,1.2*s,z);world.add(trunk);
+ for(let j=0;j<3;j++){
+  const crown=new THREE.Mesh(new THREE.ConeGeometry(1.35*s,2.2*s,8),new THREE.MeshStandardMaterial({color:j===0?0x237b4b:0x2f9255,roughness:1}));
+  crown.position.set(x,(2.4+j*.65)*s,z);world.add(crown);
+ }
+}
+for(const [x,z,s] of [[-22,-16,1.3],[22,-18,1.1],[-24,17,1.2],[24,18,1.4],[-15,25,.9],[16,25,1]]) tree(x,z,s);
+
+// Simple cloud clusters
+const cloudMat=new THREE.MeshStandardMaterial({color:0xffffff,roughness:1});
+for(let i=0;i<12;i++){
+ const cloud=new THREE.Group();
+ for(let j=0;j<4;j++){
+  const puff=new THREE.Mesh(new THREE.SphereGeometry(1,12,8),cloudMat);
+  puff.position.set((j-1.5)*1.25,Math.sin(j)*.25,Math.cos(j)*.3);
+  puff.scale.set(1.4,.65,.8);cloud.add(puff);
+ }
+ cloud.position.set((i%4-1.5)*24,18+(i%3)*4,-35-Math.floor(i/4)*30);scene.add(cloud);
+}
+
+// Controller visuals and hand tracking
+const COLORS={it:0xff3030,normal:0x35c5ff,immune:0xffdf55};
+const handMat=new THREE.MeshStandardMaterial({color:COLORS.normal,metalness:.25,roughness:.4});
+const handGeo=new THREE.SphereGeometry(.105,16,12);
+const controllers=[0,1].map(i=>{
+ const c=renderer.xr.getController(i);
+ const hand=new THREE.Mesh(handGeo,handMat.clone()); c.add(hand);
+ c.userData.hand=hand; c.userData.prev=new THREE.Vector3();
+ c.addEventListener('connected',()=>c.userData.connected=true);
+ c.addEventListener('disconnected',()=>c.userData.connected=false);
+ rig.add(c);
+ return c;
+});
+
+function setTint(mat,it,imm){mat.color.setHex(it?COLORS.it:imm?COLORS.immune:COLORS.normal);mat.emissive?.setHex(it?0x5b0000:0x001c28);}
+
+// Avatar models
+const avatars=new Map();
+function segment(mesh,a,b,r){
+ const d=new THREE.Vector3().subVectors(b,a), len=d.length();
+ mesh.position.copy(a).add(b).multiplyScalar(.5);
+ mesh.scale.set(1,len,1);
+ mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.normalize());
+}
+function makeAvatar(){
+ const group=new THREE.Group();
+ const bodyMat=new THREE.MeshStandardMaterial({color:COLORS.normal,metalness:.25,roughness:.38});
+ const dark=new THREE.MeshStandardMaterial({color:0x263949,metalness:.35,roughness:.4});
+ const head=new THREE.Mesh(new THREE.SphereGeometry(.22,20,16),bodyMat);
+ const body=new THREE.Mesh(new THREE.CapsuleGeometry(.19,.42,4,8),bodyMat);
+ const leftArm=new THREE.Mesh(new THREE.CylinderGeometry(.075,.09,1,10),bodyMat);
+ const rightArm=leftArm.clone();
+ const eyeMat=new THREE.MeshBasicMaterial({color:0x07121c});
+ for(const x of [-.075,.075]){
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(.027,10,8),eyeMat);
+  eye.position.set(x,.02,-.19);head.add(eye);
+ }
+ const antenna=new THREE.Mesh(new THREE.CylinderGeometry(.018,.018,.17),dark);antenna.position.y=.29;head.add(antenna);
+ const tip=new THREE.Mesh(new THREE.SphereGeometry(.035),new THREE.MeshBasicMaterial({color:0x53e5ff}));tip.position.y=.39;head.add(tip);
+ group.add(body,head,leftArm,rightArm);scene.add(group);
+ group.userData={body,head,leftArm,rightArm,mat:bodyMat};
+ return group;
+}
+function updateAvatar(a,p){
+ const h=new THREE.Vector3(...p.h),l=new THREE.Vector3(...p.l),r=new THREE.Vector3(...p.r);
+ a.userData.head.position.copy(h);
+ a.userData.body.position.set(h.x,h.y-.43,h.z);
+ const shoulderL=h.clone().add(new THREE.Vector3(-.19,-.2,0));
+ const shoulderR=h.clone().add(new THREE.Vector3(.19,-.2,0));
+ segment(a.userData.leftArm,shoulderL,l,.08);
+ segment(a.userData.rightArm,shoulderR,r,.08);
+}
+let ws=null,myId=null,myIt=false,myImm=false,lastSend=0,session=null;
+function connect(){
+ if(ws)ws.close();
+ const proto=location.protocol==='https:'?'wss':'ws';
+ ws=new WebSocket(`${proto}://${location.host}/?room=${encodeURIComponent(roomInput.value.trim()||'lobby')}`);
+ ws.onopen=()=>{statusEl.textContent='Connected to room. Have fun!';};
+ ws.onerror=()=>{statusEl.textContent='Could not connect to the multiplayer server. Check the server deployment.';};
+ ws.onclose=()=>{if(session)statusEl.textContent='Multiplayer connection lost. You can still explore the world.';};
+ ws.onmessage=e=>{
+  let m;try{m=JSON.parse(e.data)}catch{return}
+  if(m.t==='hi')myId=m.id;
+  if(m.t==='s'&&Array.isArray(m.p))applyState(m.p);
+  if(m.t==='tagged')navigator.vibrate?.(80);
+ };
+}
+function applyState(players){
+ const seen=new Set();
+ for(const p of players){
+  if(p.id===myId){myIt=!!p.it;myImm=!!p.imm;controllers.forEach(c=>setTint(c.userData.hand.material,myIt,myImm));continue;}
+  seen.add(p.id);
+  let a=avatars.get(p.id);if(!a){a=makeAvatar();avatars.set(p.id,a);}
+  a.visible=!!p.c;
+  if(p.c&&p.h&&p.l&&p.r){updateAvatar(a,p);setTint(a.userData.mat,p.it,p.imm);}
+ }
+ for(const [id,a] of avatars)if(!seen.has(id)){scene.remove(a);avatars.delete(id);}
+}
+
+// Locomotion: left stick moves relative to headset facing; right stick turns smoothly.
+const clock=new THREE.Clock();
+let desktop=false, yaw=0, keys={};
+function movePlayer(dt){
+ if(desktop){
+  const forward=(keys.KeyW?1:0)-(keys.KeyS?1:0);
+  const side=(keys.KeyD?1:0)-(keys.KeyA?1:0);
+  const dir=new THREE.Vector3(side,0,-forward);
+  if(dir.lengthSq())dir.normalize().applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
+  rig.position.addScaledVector(dir,5*dt);
+  if(keys.ArrowLeft)yaw+=1.8*dt;if(keys.ArrowRight)yaw-=1.8*dt;
+  rig.rotation.y=yaw;
+  return;
+ }
+ if(!session)return;
+ const source=session.inputSources.find(s=>s.handedness==='left'&&s.gamepad);
+ if(source){
+  const axes=source.gamepad.axes;
+  const x=axes.length>=4?axes[2]:axes[0], y=axes.length>=4?axes[3]:axes[1];
+  const dead=.16;
+  if(Math.abs(x)>dead||Math.abs(y)>dead){
+   const forward=new THREE.Vector3(0,0,-1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
+   forward.y=0;forward.normalize();
+   const right=new THREE.Vector3().crossVectors(forward,new THREE.Vector3(0,1,0)).normalize();
+   rig.position.addScaledVector(forward,-y*4.2*dt);
+   rig.position.addScaledVector(right,x*4.2*dt);
+  }
+ }
+ const turnSource=session.inputSources.find(s=>s.handedness==='right'&&s.gamepad);
+ if(turnSource){
+  const a=turnSource.gamepad.axes;
+  const x=a.length>=4?a[2]:a[0];
+  if(Math.abs(x)>.65){const step=Math.sign(x)*1.8*dt;rig.rotation.y-=step;}
+ }
+ // Keep the player in the arena and at floor height.
+ rig.position.y=0;
+ const radius=Math.hypot(rig.position.x,rig.position.z);
+ if(radius>31){rig.position.x*=31/radius;rig.position.z*=31/radius;}
+}
+
+function playerPoints(){
+ const h=new THREE.Vector3();camera.getWorldPosition(h);
+ const l=new THREE.Vector3(),r=new THREE.Vector3();
+ if(controllers[0].userData.connected)controllers[0].getWorldPosition(l);else l.copy(h).add(new THREE.Vector3(-.25,-.35,-.25));
+ if(controllers[1].userData.connected)controllers[1].getWorldPosition(r);else r.copy(h).add(new THREE.Vector3(.25,-.35,-.25));
+ return {h:h.toArray(),l:l.toArray(),r:r.toArray()};
+}
+
+function animate(){
+ const dt=Math.min(clock.getDelta(),.05);
+ movePlayer(dt);
+ const now=performance.now();
+ if(ws?.readyState===WebSocket.OPEN&&now-lastSend>50){
+  lastSend=now;const p=playerPoints();
+  try{ws.send(JSON.stringify({t:'p',...p,c:true}));}catch{}
+ }
+ renderer.render(scene,camera);
+}
+renderer.setAnimationLoop(animate);
+
+function resize(){camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);}
+addEventListener('resize',resize);
+addEventListener('keydown',e=>{keys[e.code]=true;});
+addEventListener('keyup',e=>{keys[e.code]=false;});
+renderer.domElement.addEventListener('click',()=>{if(desktop&&!document.pointerLockElement)renderer.domElement.requestPointerLock?.();});
+addEventListener('mousemove',e=>{if(desktop&&document.pointerLockElement){yaw-=e.movementX*.002;rig.rotation.y=yaw;}});
+
+async function enterVR(){
+ try{
+  statusEl.textContent='Starting virtual reality…';
+  const s=await navigator.xr.requestSession('immersive-vr',{requiredFeatures:['local-floor'],optionalFeatures:['hand-tracking']});
+  session=s;desktop=false;camera.position.set(0,0,0);
+  s.addEventListener('end',()=>{session=null;ws?.close();ws=null;menu.style.display='block';$('hud').style.display='none';statusEl.textContent='VR session ended.';});
+  await renderer.xr.setSession(s);
+  menu.style.display='none';$('hud').style.display='block';
+  rig.position.set(0,0,8);rig.rotation.set(0,0,0);
+  connect();
+ }catch(err){statusEl.textContent='Could not start VR: '+(err?.message||String(err));}
+}
+function enterDesktop(){
+ desktop=true;session=null;camera.position.set(0,1.65,0);menu.style.display='none';$('hud').style.display='block';
+ camera.position.set(0,1.65,0);rig.position.set(0,0,8);connect();
+ statusEl.textContent='Desktop world loaded.';
+}
+enterBtn.addEventListener('click',enterVR);
+desktopBtn.addEventListener('click',enterDesktop);
+
+(async()=>{
+ try{
+  if(!navigator.xr){enterBtn.disabled=true;enterBtn.textContent='VR NOT AVAILABLE';statusEl.textContent='WebXR VR is not available in this browser. You can still use Play on Desktop.';return;}
+  const ok=await navigator.xr.isSessionSupported('immersive-vr').catch(()=>false);
+  enterBtn.disabled=!ok;enterBtn.textContent=ok?'ENTER VIRTUAL VR':'VR NOT SUPPORTED';
+  statusEl.textContent=ok?'Virtual VR world ready.':'This browser/device does not support immersive VR. Try Quest Browser on a supported headset.';
+ }catch(e){statusEl.textContent='VR check failed: '+e.message;}
+})();
+</script>
+</body>
+</html>
