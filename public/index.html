@@ -84,6 +84,9 @@ scene.add(new THREE.HemisphereLight(0xdff4ff, 0x526044, 2.0));
 const sun = new THREE.DirectionalLight(0xfff1d2, 2.3);
 sun.position.set(-18, 30, 12); scene.add(sun);
 
+// Ground collision height must be declared before the ground meshes use it.
+const GROUND_TOP = 0;
+
 // Virtual sky dome and distant horizon
 const sky = new THREE.Mesh(new THREE.SphereGeometry(150, 32, 20), new THREE.MeshBasicMaterial({color:0x83c8f2, side:THREE.BackSide}));
 scene.add(sky);
@@ -268,7 +271,6 @@ const playerVelocity = new THREE.Vector3();
 const PLAYER_RADIUS = .34;
 const PLAYER_HEIGHT = 1.7;
 const FLOOR_Y = 0;
-const GROUND_TOP = 0;
 const HAND_FLOOR_RADIUS = 0.16;
 const _pushOut = new THREE.Vector3();
 
